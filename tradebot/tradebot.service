@@ -1,0 +1,22 @@
+[Unit]
+Description=Tradebot Market Data Collector
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/tradebot_stage_a/tradebot
+ExecStart=/usr/bin/python3 -m bot.collector
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables (optional, can also use .env file)
+# Environment="EXCHANGE_NAME=binance"
+# Environment="SYMBOLS=BTC/USDT,ETH/USDT"
+# Environment="TIMEFRAME=1m"
+
+[Install]
+WantedBy=multi-user.target
+
