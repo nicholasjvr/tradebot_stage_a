@@ -1,10 +1,12 @@
 """
 Exchange interface using ccxt library
 """
+import time
 import ccxt
 import logging
 from typing import List, Dict, Optional
-from .config import EXCHANGE_NAME, EXCHANGE_API_KEY, EXCHANGE_SECRET, EXCHANGE_SANDBOX
+from ccxt.base.errors import NetworkError, DDoSProtection, RateLimitExceeded, ExchangeError
+from .config import EXCHANGE_NAME, EXCHANGE_API_KEY, EXCHANGE_SECRET, EXCHANGE_SANDBOX, PUBLIC_ONLY
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +19,9 @@ class Exchange:
         exchange_class = getattr(ccxt, EXCHANGE_NAME)
         
         config = {
-            'apiKey': EXCHANGE_API_KEY if EXCHANGE_API_KEY else None,
-            'secret': EXCHANGE_SECRET if EXCHANGE_SECRET else None,
+            # API keys are ignored when PUBLIC_ONLY is true (Stage A safety)
+            'apiKey': EXCHANGE_API_KEY if EXCHANGE_API_KEY and not PUBLIC_ONLY else None,
+            'secret': EXCHANGE_SECRET if EXCHANGE_SECRET and not PUBLIC_ONLY else None,
             'enableRateLimit': True,
             'options': {
                 'defaultType': 'spot',  # spot, future, delivery
@@ -30,7 +33,39 @@ class Exchange:
             config['sandbox'] = True
         
         self.exchange = exchange_class(config)
-        logger.info(f"Initialized {EXCHANGE_NAME} exchange")
+        if EXCHANGE_SANDBOX:
+            try:
+                self.exchange.set_sandbox_mode(True)
+            except Exception:
+                logger.warning("Sandbox mode requested but not supported by exchange")
+
+        if PUBLIC_ONLY and (EXCHANGE_API_KEY or EXCHANGE_SECRET):
+            logger.warning("PUBLIC_ONLY=true: ignoring provided API keys; using public endpoints only")
+        logger.info(f"Initialized {EXCHANGE_NAME} exchange (public-only={PUBLIC_ONLY}, sandbox={EXCHANGE_SANDBOX})")
+
+    def _request_with_backoff(self, func, *args, **kwargs):
+        """Execute exchange call with simple exponential backoff for rate limits/network errors."""
+        backoff = 1
+        attempts = 0
+        last_err = None
+        while attempts < 5:
+            try:
+                return func(*args, **kwargs)
+            except (RateLimitExceeded, DDoSProtection) as e:
+                last_err = e
+                logger.warning(f"Rate limit hit; retrying in {backoff}s (attempt {attempts + 1}/5)")
+            except NetworkError as e:
+                last_err = e
+                logger.warning(f"Network error; retrying in {backoff}s (attempt {attempts + 1}/5)")
+            except ExchangeError as e:
+                # Fail fast on exchange errors that are not transient
+                logger.error(f"Exchange error: {e}")
+                raise
+            attempts += 1
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 30)
+        logger.error(f"Exceeded retry budget for exchange call: {last_err}")
+        raise last_err
     
     def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 1, since: Optional[int] = None) -> List[List]:
         """
@@ -46,8 +81,8 @@ class Exchange:
             List of [timestamp, open, high, low, close, volume]
         """
         try:
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit, since=since)
-            logger.debug(f"Fetched {len(ohlcv)} candles for {symbol} {timeframe}")
+            ohlcv = self._request_with_backoff(self.exchange.fetch_ohlcv, symbol, timeframe, limit=limit, since=since)
+            logger.debug(f"Fetched {len(ohlcv)} candles for {symbol} {timeframe} (since={since})")
             return ohlcv
         except Exception as e:
             logger.error(f"Error fetching OHLCV for {symbol}: {e}")
@@ -64,7 +99,7 @@ class Exchange:
             Ticker data dictionary
         """
         try:
-            ticker = self.exchange.fetch_ticker(symbol)
+            ticker = self._request_with_backoff(self.exchange.fetch_ticker, symbol)
             logger.debug(f"Fetched ticker for {symbol}")
             return ticker
         except Exception as e:

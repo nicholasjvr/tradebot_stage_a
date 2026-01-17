@@ -18,10 +18,12 @@ DB_PATH = DB_DIR / "marketdata.sqlite"
 # Logs directory
 LOGS_DIR = BASE_DIR / "logs"
 
-# Exchange configuration
+# Exchange configuration (Stage A is public-data only)
 EXCHANGE_NAME = os.getenv("EXCHANGE_NAME", "binance")
 EXCHANGE_API_KEY = os.getenv("EXCHANGE_API_KEY", "")
 EXCHANGE_SECRET = os.getenv("EXCHANGE_SECRET", "")
+# PUBLIC_ONLY forces all requests to public endpoints; API keys are ignored when true
+PUBLIC_ONLY = os.getenv("PUBLIC_ONLY", "true").lower() == "true"
 EXCHANGE_SANDBOX = os.getenv("EXCHANGE_SANDBOX", "false").lower() == "true"
 
 # Trading configuration

@@ -30,7 +30,11 @@ class Database:
         if self.conn is None:
             self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
             self.conn.row_factory = sqlite3.Row  # Return rows as dictionaries
-            logger.debug("Database connection established")
+            # Harden SQLite for concurrent safe writes
+            self.conn.execute("PRAGMA journal_mode=WAL;")
+            self.conn.execute("PRAGMA synchronous=NORMAL;")
+            self.conn.execute("PRAGMA busy_timeout=5000;")
+            logger.debug("Database connection established (WAL enabled)")
     
     def close(self):
         """Close database connection"""
@@ -53,10 +57,9 @@ class Database:
         self.connect()
         cursor = self.conn.cursor()
         
-        # OHLCV data table
+        # OHLCV data table (deterministic composite primary key)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS ohlcv (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
                 timeframe TEXT NOT NULL,
                 timestamp INTEGER NOT NULL,
@@ -65,10 +68,16 @@ class Database:
                 low REAL NOT NULL,
                 close REAL NOT NULL,
                 volume REAL NOT NULL,
+                close_time INTEGER NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(symbol, timeframe, timestamp)
+                PRIMARY KEY (symbol, timeframe, timestamp)
             )
         """)
+        # Backward-compat: ensure close_time exists if table was created before this version
+        cursor.execute("PRAGMA table_info(ohlcv)")
+        existing_cols = {row['name'] for row in cursor.fetchall()}
+        if 'close_time' not in existing_cols:
+            cursor.execute("ALTER TABLE ohlcv ADD COLUMN close_time INTEGER")
         
         # Ticker data table
         cursor.execute("""
@@ -112,29 +121,42 @@ class Database:
         cursor = self.conn.cursor()
         
         inserted = 0
-        skipped = 0
+        updated = 0
+        timeframe_ms = self._timeframe_to_ms(timeframe)
         
         for candle in ohlcv_data:
             timestamp, open_price, high, low, close_price, volume = candle
+            close_time = timestamp + timeframe_ms - 1
             
             try:
+                # Detect existing row to log insert vs update
                 cursor.execute("""
-                    INSERT OR IGNORE INTO ohlcv 
-                    (symbol, timeframe, timestamp, open, high, low, close, volume)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (symbol, timeframe, timestamp, open_price, high, low, close_price, volume))
+                    SELECT 1 FROM ohlcv WHERE symbol = ? AND timeframe = ? AND timestamp = ?
+                """, (symbol, timeframe, timestamp))
+                exists = cursor.fetchone() is not None
+
+                cursor.execute("""
+                    INSERT INTO ohlcv (symbol, timeframe, timestamp, open, high, low, close, volume, close_time)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(symbol, timeframe, timestamp) DO UPDATE SET
+                        open=excluded.open,
+                        high=excluded.high,
+                        low=excluded.low,
+                        close=excluded.close,
+                        volume=excluded.volume,
+                        close_time=excluded.close_time
+                """, (symbol, timeframe, timestamp, open_price, high, low, close_price, volume, close_time))
                 
-                if cursor.rowcount > 0:
-                    inserted += 1
+                if exists:
+                    updated += 1
                 else:
-                    skipped += 1
+                    inserted += 1
             except Exception as e:
                 logger.error(f"Error inserting OHLCV data: {e}")
-                skipped += 1
         
         self.conn.commit()
-        logger.debug(f"Inserted {inserted} OHLCV records, skipped {skipped} duplicates for {symbol}")
-        return inserted, skipped
+        logger.debug(f"Inserted {inserted} OHLCV records, updated {updated} existing for {symbol}")
+        return inserted, updated
     
     def insert_ticker(self, symbol: str, ticker_data: Dict):
         """
@@ -195,6 +217,20 @@ class Database:
         
         result = cursor.fetchone()
         return result['max_ts'] if result and result['max_ts'] else None
+
+    def _timeframe_to_ms(self, timeframe: str) -> int:
+        """Convert timeframe string to milliseconds"""
+        unit = timeframe[-1]
+        value = int(timeframe[:-1])
+
+        multipliers = {
+            'm': 60 * 1000,
+            'h': 3600 * 1000,
+            'd': 86400 * 1000,
+            'w': 7 * 86400 * 1000
+        }
+
+        return value * multipliers.get(unit, 60 * 1000)
     
     def get_ohlcv(self, symbol: str, timeframe: str, start_time: Optional[int] = None, 
                   end_time: Optional[int] = None, limit: Optional[int] = None) -> List[Dict]:

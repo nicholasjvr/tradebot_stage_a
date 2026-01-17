@@ -26,7 +26,7 @@ class Validator:
         if not DB_PATH.exists():
             logger.error(f"Database file not found: {DB_PATH}")
             return False
-        logger.info(f"✓ Database file exists: {DB_PATH}")
+        logger.info(f"[VALIDATOR] database_exists path={DB_PATH}")
         return True
     
     def check_table_counts(self):
@@ -37,12 +37,12 @@ class Validator:
         # Check OHLCV counts
         cursor.execute("SELECT COUNT(*) as count FROM ohlcv")
         ohlcv_count = cursor.fetchone()['count']
-        logger.info(f"OHLCV records: {ohlcv_count}")
+        logger.info(f"[VALIDATOR] table=ohlcv count={ohlcv_count}")
         
         # Check ticker counts
         cursor.execute("SELECT COUNT(*) as count FROM tickers")
         ticker_count = cursor.fetchone()['count']
-        logger.info(f"Ticker records: {ticker_count}")
+        logger.info(f"[VALIDATOR] table=tickers count={ticker_count}")
         
         # Count by symbol
         cursor.execute("""
@@ -50,12 +50,11 @@ class Validator:
             FROM ohlcv 
             GROUP BY symbol
         """)
-        logger.info("\nOHLCV records by symbol:")
         for row in cursor.fetchall():
-            logger.info(f"  {row['symbol']}: {row['count']} records")
+            logger.info(f"[VALIDATOR] table=ohlcv symbol={row['symbol']} count={row['count']}")
     
     def check_data_gaps(self, symbol: str, hours: int = 24):
-        """Check for gaps in data collection"""
+        """Check for gaps and regressions in data collection"""
         self.db.connect()
         cursor = self.db.conn.cursor()
         
@@ -76,28 +75,46 @@ class Validator:
         timestamps = [row['timestamp'] for row in cursor.fetchall()]
         
         if not timestamps:
-            logger.warning(f"{symbol}: No data found in last {hours} hours")
+            logger.warning(f"[VALIDATOR] symbol={symbol} timeframe={TIMEFRAME} status=no_data window_hours={hours}")
             return
         
         gaps = []
+        regressions = []
         for i in range(len(timestamps) - 1):
             gap = timestamps[i + 1] - timestamps[i]
-            if gap > timeframe_ms * 2:  # Allow 2x timeframe as acceptable gap
+            if gap > timeframe_ms:  # any gap bigger than one candle interval is suspicious
                 gaps.append({
                     'start': timestamps[i],
                     'end': timestamps[i + 1],
                     'gap_ms': gap,
                     'gap_candles': gap / timeframe_ms
                 })
+            if timestamps[i + 1] <= timestamps[i]:
+                regressions.append({
+                    'prev': timestamps[i],
+                    'curr': timestamps[i + 1]
+                })
         
         if gaps:
-            logger.warning(f"{symbol}: Found {len(gaps)} gaps:")
+            logger.warning(f"[VALIDATOR] symbol={symbol} timeframe={TIMEFRAME} gaps_detected={len(gaps)}")
             for gap in gaps[:10]:  # Show first 10 gaps
                 start_dt = datetime.fromtimestamp(gap['start'] / 1000)
                 end_dt = datetime.fromtimestamp(gap['end'] / 1000)
-                logger.warning(f"  Gap: {start_dt} to {end_dt} ({gap['gap_candles']:.1f} candles)")
+                logger.warning(
+                    f"[VALIDATOR] symbol={symbol} gap_start={start_dt.isoformat()} gap_end={end_dt.isoformat()} "
+                    f"missing_candles={gap['gap_candles']:.1f}"
+                )
         else:
-            logger.info(f"{symbol}: ✓ No significant gaps found")
+            logger.info(f"[VALIDATOR] symbol={symbol} timeframe={TIMEFRAME} gaps_detected=0")
+
+        if regressions:
+            logger.error(f"[VALIDATOR] symbol={symbol} regressions_detected={len(regressions)} (timestamps not strictly increasing)")
+            for reg in regressions[:10]:
+                prev_dt = datetime.fromtimestamp(reg['prev'] / 1000)
+                curr_dt = datetime.fromtimestamp(reg['curr'] / 1000)
+                logger.error(f"[VALIDATOR] symbol={symbol} regression prev={prev_dt.isoformat()} curr={curr_dt.isoformat()}")
+        else:
+            logger.info(f"[VALIDATOR] symbol={symbol} regressions_detected=0")
     
     def check_latest_data(self):
         """Check when data was last collected"""
@@ -110,7 +127,6 @@ class Validator:
             GROUP BY symbol
         """)
         
-        logger.info("\nLatest data by symbol:")
         now = datetime.now()
         for row in cursor.fetchall():
             if row['latest_ts']:
@@ -118,10 +134,10 @@ class Validator:
                 age = now - latest_dt
                 age_minutes = age.total_seconds() / 60
                 
-                status = "✓" if age_minutes < 5 else "⚠"
-                logger.info(f"{status} {row['symbol']}: {latest_dt} ({age_minutes:.1f} minutes ago)")
+                status = "fresh" if age_minutes < 5 else "stale"
+                logger.info(f"[VALIDATOR] symbol={row['symbol']} latest_ts={latest_dt.isoformat()} age_min={age_minutes:.1f} status={status}")
             else:
-                logger.warning(f"✗ {row['symbol']}: No data found")
+                logger.warning(f"[VALIDATOR] symbol={row['symbol']} status=no_data")
     
     def check_data_quality(self, symbol: str):
         """Check data quality (nulls, zeros, etc.)"""
@@ -140,9 +156,9 @@ class Validator:
         null_count = cursor.fetchone()['count']
         
         if null_count > 0:
-            logger.warning(f"{symbol}: Found {null_count} records with null values")
+            logger.warning(f"[VALIDATOR] symbol={symbol} null_values={null_count}")
         else:
-            logger.info(f"{symbol}: ✓ No null values found")
+            logger.info(f"[VALIDATOR] symbol={symbol} null_values=0")
         
         # Check for zero volume
         cursor.execute("""
@@ -153,7 +169,7 @@ class Validator:
         zero_vol_count = cursor.fetchone()['count']
         
         if zero_vol_count > 0:
-            logger.warning(f"{symbol}: Found {zero_vol_count} records with zero volume")
+            logger.warning(f"[VALIDATOR] symbol={symbol} zero_volume={zero_vol_count}")
         
         # Check for invalid OHLC relationships
         cursor.execute("""
@@ -170,9 +186,9 @@ class Validator:
         invalid_count = cursor.fetchone()['count']
         
         if invalid_count > 0:
-            logger.error(f"{symbol}: Found {invalid_count} records with invalid OHLC relationships")
+            logger.error(f"[VALIDATOR] symbol={symbol} invalid_ohlc={invalid_count}")
         else:
-            logger.info(f"{symbol}: ✓ All OHLC relationships valid")
+            logger.info(f"[VALIDATOR] symbol={symbol} invalid_ohlc=0")
     
     def _timeframe_to_ms(self, timeframe: str) -> int:
         """Convert timeframe string to milliseconds"""
@@ -199,24 +215,24 @@ class Validator:
         
         self.db.connect()
         
-        logger.info("\n1. Record Counts:")
+        logger.info("[VALIDATOR] step=record_counts")
         self.check_table_counts()
         
-        logger.info("\n2. Latest Data:")
+        logger.info("[VALIDATOR] step=latest_data")
         self.check_latest_data()
         
-        logger.info("\n3. Data Quality:")
+        logger.info("[VALIDATOR] step=data_quality")
         for symbol in SYMBOLS:
             symbol = symbol.strip()
             self.check_data_quality(symbol)
         
-        logger.info("\n4. Data Gaps (last 24 hours):")
+        logger.info("[VALIDATOR] step=data_gaps window_hours=24")
         for symbol in SYMBOLS:
             symbol = symbol.strip()
             self.check_data_gaps(symbol, hours=24)
         
         self.db.close()
-        logger.info("\n" + "=" * 60)
+        logger.info("=" * 60)
         logger.info("Validation complete")
 
 

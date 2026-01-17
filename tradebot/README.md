@@ -1,6 +1,6 @@
 # Tradebot - Cryptocurrency Market Data Collector
 
-A lightweight cryptocurrency market data collector designed to run on a Raspberry Pi, collecting OHLCV and ticker data from exchanges using the ccxt library.
+A lightweight, **public-data-only** market data collector designed to run on a Raspberry Pi, collecting OHLCV and ticker data from exchanges using the ccxt library. Stage A is strictly non-trading: no orders, no withdrawals, no private endpoints.
 
 ## Features
 
@@ -14,26 +14,32 @@ A lightweight cryptocurrency market data collector designed to run on a Raspberr
 
 ## Quick Start
 
-### 1. Installation
+### 1. Installation (Raspberry Pi)
 
 ```bash
-# Clone or navigate to the project directory
-cd tradebot
+# Clone and enter the project directory
+git clone <repo-url> tradebot_stage_a
+cd tradebot_stage_a/tradebot
+
+# Create a virtual environment
+python3 -m venv ../.venv
+source ../.venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Configuration
+### 2. Configuration (public endpoints only)
 
 Edit `.env` file:
 
 ```bash
 # Exchange Configuration
 EXCHANGE_NAME=binance
-EXCHANGE_API_KEY=          # Optional for public data
-EXCHANGE_SECRET=           # Optional for public data
+EXCHANGE_API_KEY=          # Ignored when PUBLIC_ONLY=true
+EXCHANGE_SECRET=           # Ignored when PUBLIC_ONLY=true
 EXCHANGE_SANDBOX=false
+PUBLIC_ONLY=true           # Stage A safety guard
 
 # Trading Configuration
 SYMBOLS=BTC/USDT,ETH/USDT  # Comma-separated list
@@ -49,7 +55,7 @@ python scripts/init_db.py
 
 This creates the SQLite database file at `db/marketdata.sqlite` with the required tables.
 
-### 4. Run Collector
+### 4. Run Collector (public data only)
 
 ```bash
 # Run once (for testing)
@@ -65,6 +71,13 @@ The collector will:
 - Collect OHLCV and ticker data at the specified interval
 - Store data in the SQLite database
 - Log activity to `logs/collector_YYYYMMDD.log`
+
+Log lines are explicit and greppable, e.g.:
+
+```
+[COLLECTOR] symbol=BTC/USDT timeframe=1m fetched=500 inserted=500 updated=0 latest_open=1700000000000
+[VALIDATOR] symbol=BTC/USDT timeframe=1m gaps_detected=0
+```
 
 ## Usage
 
@@ -90,7 +103,7 @@ This will show:
 - Record counts
 - Latest data timestamps
 - Data quality checks (nulls, invalid OHLC relationships)
-- Data gaps in the last 24 hours
+- Gap detection and timestamp regressions (last 24h window)
 
 ### Plotting
 
@@ -152,7 +165,7 @@ sudo cp tradebot.service /etc/systemd/system/
 sudo nano /etc/systemd/system/tradebot.service
 ```
 
-Update `WorkingDirectory` and `ExecStart` paths.
+Update `WorkingDirectory`, `EnvironmentFile`, and `ExecStart` paths to match your Pi install and virtual environment.
 
 3. Enable and start the service:
 

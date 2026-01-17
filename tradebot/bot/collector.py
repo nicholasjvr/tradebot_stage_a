@@ -44,9 +44,9 @@ class Collector:
             symbol = symbol.strip()
             if self.exchange.validate_symbol(symbol):
                 self.valid_symbols.append(symbol)
-                logger.info(f"✓ Symbol {symbol} is valid")
+                logger.info(f"[COLLECTOR] symbol={symbol} status=available")
             else:
-                logger.warning(f"✗ Symbol {symbol} is not available on {EXCHANGE_NAME}")
+                logger.warning(f"[COLLECTOR] symbol={symbol} status=unavailable exchange={EXCHANGE_NAME}")
         
         if not self.valid_symbols:
             logger.error("No valid symbols found! Check your SYMBOLS configuration.")
@@ -70,29 +70,46 @@ class Collector:
             symbol: Trading pair to collect data for
         """
         try:
-            # Get latest timestamp to avoid duplicates
             latest_ts = self.db.get_latest_timestamp(symbol, TIMEFRAME)
-            
-            # Fetch OHLCV data
-            # If we have latest timestamp, fetch from that point forward
-            # Otherwise, fetch the most recent candle
-            limit = 500 if latest_ts else 1
-            
-            ohlcv_data = self.exchange.fetch_ohlcv(
-                symbol, 
-                TIMEFRAME, 
-                limit=limit,
-                since=latest_ts + 1 if latest_ts else None
-            )
-            
-            if ohlcv_data:
-                inserted, skipped = self.db.insert_ohlcv(symbol, TIMEFRAME, ohlcv_data)
-                logger.info(f"{symbol}: Inserted {inserted} candles, skipped {skipped} duplicates")
+            since = latest_ts + 1 if latest_ts else None
+            total_fetched = 0
+            total_inserted = 0
+            total_updated = 0
+
+            while True:
+                ohlcv_batch = self.exchange.fetch_ohlcv(
+                    symbol,
+                    TIMEFRAME,
+                    limit=500,
+                    since=since
+                )
+                if not ohlcv_batch:
+                    break
+
+                fetched = len(ohlcv_batch)
+                total_fetched += fetched
+
+                inserted, updated = self.db.insert_ohlcv(symbol, TIMEFRAME, ohlcv_batch)
+                total_inserted += inserted
+                total_updated += updated
+
+                latest_open_time = ohlcv_batch[-1][0]
+                since = latest_open_time + 1
+
+                # If batch smaller than limit, we are caught up
+                if fetched < 500:
+                    break
+
+            if total_fetched == 0:
+                logger.info(f"[COLLECTOR] symbol={symbol} timeframe={TIMEFRAME} fetched=0 inserted=0 updated=0 latest_ts={latest_ts}")
             else:
-                logger.warning(f"{symbol}: No new data available")
-                
+                logger.info(
+                    f"[COLLECTOR] symbol={symbol} timeframe={TIMEFRAME} fetched={total_fetched} "
+                    f"inserted={total_inserted} updated={total_updated} latest_open={since - 1}"
+                )
+
         except Exception as e:
-            logger.error(f"Error collecting OHLCV for {symbol}: {e}", exc_info=True)
+            logger.error(f"[COLLECTOR] symbol={symbol} error={e}", exc_info=True)
     
     def collect_ticker(self, symbol: str):
         """
@@ -117,7 +134,7 @@ class Collector:
                 self.collect_ohlcv(symbol)
                 self.collect_ticker(symbol)
             except Exception as e:
-                logger.error(f"Error processing {symbol}: {e}", exc_info=True)
+                logger.error(f"[COLLECTOR] symbol={symbol} error=processing_failed detail={e}", exc_info=True)
         
         logger.info("Collection cycle completed")
     
