@@ -1,0 +1,20 @@
+Updt
+
+
+# 1) Stop the running service (avoids half-updated code running)
+sudo systemctl stop tradebot.service
+
+# 2) Get latest code
+cd /home/pi/tradebot_stage_a
+git pull
+
+# 3) Update Python deps (only needed if requirements changed, but safe to do)
+source .venv/bin/activate
+pip install -r tradebot/requirements.txt
+
+# 4) If you added new DB schema/init logic, run your init (optional)
+# python tradebot/scripts/init_db.py
+
+# 5) Restart
+sudo systemctl start tradebot.service
+sudo systemctl status tradebot.service
