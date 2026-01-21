@@ -123,6 +123,21 @@ python -m bot.plot --symbol BTC/USDT --hours 12 --save plots/btc_12h.png
 python -m bot.plot --symbol BTC/USDT --type trend
 ```
 
+### Backfill missed candles (after downtime)
+
+If the collector was stopped for a while, you can run a **one-shot backfill** that fetches any missing OHLCV candles and exits:
+
+```bash
+# Backfill using "latest in DB -> now" (default behavior)
+python -m bot.backfill
+
+# Backfill a specific symbol only
+python -m bot.backfill --symbol BTC/USDT
+
+# Re-fetch and upsert the last N hours (useful if you suspect gaps)
+python -m bot.backfill --hours 24
+```
+
 ## Database Schema
 
 ### OHLCV Table
