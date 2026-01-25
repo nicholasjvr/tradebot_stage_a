@@ -16,5 +16,5 @@ pip install -r tradebot/requirements.txt
 # python tradebot/scripts/init_db.py
 
 # 5) Restart
-sudo systemctl start tradebot.service
-sudo systemctl status tradebot.service
+sudo systemctl restart tradebot.service
+sudo journalctl -u tradebot.service -f
