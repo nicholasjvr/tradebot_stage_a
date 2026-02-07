@@ -4,7 +4,7 @@ Database operations for storing market data
 import sqlite3
 import logging
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, Iterable
 from pathlib import Path
 from .config import DB_PATH
 
@@ -98,12 +98,80 @@ class Database:
                 UNIQUE(symbol, timestamp)
             )
         """)
+
+        # -----------------------------
+        # Stage B: Trading tables
+        # -----------------------------
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mode TEXT NOT NULL,                 -- paper | live
+                exchange TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,                 -- buy | sell
+                type TEXT NOT NULL,                 -- market | limit
+                status TEXT NOT NULL,               -- open | closed | canceled | rejected | filled
+                amount REAL,
+                price REAL,
+                filled REAL,
+                average REAL,
+                cost REAL,
+                fee REAL,
+                fee_currency TEXT,
+                client_order_id TEXT,
+                exchange_order_id TEXT,
+                strategy TEXT,
+                signal TEXT,
+                reason TEXT,
+                ts INTEGER,                         -- milliseconds
+                raw_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS fills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER,
+                mode TEXT NOT NULL,
+                exchange TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                price REAL NOT NULL,
+                amount REAL NOT NULL,
+                cost REAL NOT NULL,
+                fee REAL,
+                fee_currency TEXT,
+                ts INTEGER,                         -- milliseconds
+                raw_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(order_id) REFERENCES orders(id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS positions (
+                mode TEXT NOT NULL,                 -- paper | live
+                exchange TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                base_qty REAL NOT NULL DEFAULT 0,
+                avg_entry_price REAL,
+                realized_pnl REAL NOT NULL DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (mode, exchange, symbol)
+            )
+        """)
         
         # Create indexes for faster queries
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_ohlcv_symbol_timeframe ON ohlcv(symbol, timeframe)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_ohlcv_timestamp ON ohlcv(timestamp)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickers_symbol ON tickers(symbol)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickers_timestamp ON tickers(timestamp)")
+
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_symbol_ts ON orders(symbol, ts)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_exchange_order_id ON orders(exchange_order_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_fills_order_id ON fills(order_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_positions_symbol ON positions(symbol)")
         
         self.conn.commit()
         logger.info("Database tables created/verified")
@@ -271,4 +339,196 @@ class Database:
         rows = cursor.fetchall()
         
         return [dict(row) for row in rows]
+
+    # -----------------------------
+    # Stage B: Trading helpers
+    # -----------------------------
+    def get_latest_close(self, symbol: str, timeframe: str) -> Optional[Dict[str, Any]]:
+        """Return latest OHLCV close + timestamp for symbol/timeframe."""
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT timestamp, close
+            FROM ohlcv
+            WHERE symbol = ? AND timeframe = ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (symbol, timeframe),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_recent_closes(self, symbol: str, timeframe: str, limit: int) -> List[Dict[str, Any]]:
+        """Return most recent `limit` closes ordered ascending by timestamp."""
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT timestamp, close
+            FROM ohlcv
+            WHERE symbol = ? AND timeframe = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (symbol, timeframe, limit),
+        )
+        rows = cursor.fetchall()
+        # Reverse into chronological order
+        return [dict(r) for r in reversed(rows)]
+
+    def insert_order(
+        self,
+        *,
+        mode: str,
+        exchange: str,
+        symbol: str,
+        side: str,
+        order_type: str,
+        status: str,
+        amount: Optional[float] = None,
+        price: Optional[float] = None,
+        filled: Optional[float] = None,
+        average: Optional[float] = None,
+        cost: Optional[float] = None,
+        fee: Optional[float] = None,
+        fee_currency: Optional[str] = None,
+        client_order_id: Optional[str] = None,
+        exchange_order_id: Optional[str] = None,
+        strategy: Optional[str] = None,
+        signal: Optional[str] = None,
+        reason: Optional[str] = None,
+        ts: Optional[int] = None,
+        raw_json: Optional[str] = None,
+    ) -> int:
+        """Insert an order record and return its DB id."""
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO orders (
+                mode, exchange, symbol, side, type, status,
+                amount, price, filled, average, cost,
+                fee, fee_currency,
+                client_order_id, exchange_order_id,
+                strategy, signal, reason,
+                ts, raw_json
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?,
+                ?, ?,
+                ?, ?, ?,
+                ?, ?
+            )
+            """,
+            (
+                mode, exchange, symbol, side, order_type, status,
+                amount, price, filled, average, cost,
+                fee, fee_currency,
+                client_order_id, exchange_order_id,
+                strategy, signal, reason,
+                ts, raw_json,
+            ),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def update_order(self, order_id: int, **fields: Any) -> None:
+        """Update an order row with a whitelisted set of fields."""
+        allowed = {
+            "status", "filled", "average", "cost", "fee", "fee_currency",
+            "client_order_id", "exchange_order_id", "raw_json", "ts", "price", "amount",
+            "strategy", "signal", "reason",
+        }
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return
+        self.connect()
+        cursor = self.conn.cursor()
+        set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+        params: list[Any] = list(updates.values()) + [order_id]
+        cursor.execute(f"UPDATE orders SET {set_clause} WHERE id = ?", params)
+        self.conn.commit()
+
+    def insert_fill(
+        self,
+        *,
+        order_id: Optional[int],
+        mode: str,
+        exchange: str,
+        symbol: str,
+        side: str,
+        price: float,
+        amount: float,
+        cost: float,
+        fee: Optional[float] = None,
+        fee_currency: Optional[str] = None,
+        ts: Optional[int] = None,
+        raw_json: Optional[str] = None,
+    ) -> int:
+        """Insert a fill record and return its DB id."""
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO fills (
+                order_id, mode, exchange, symbol, side,
+                price, amount, cost,
+                fee, fee_currency,
+                ts, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                order_id, mode, exchange, symbol, side,
+                price, amount, cost,
+                fee, fee_currency,
+                ts, raw_json,
+            ),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def get_position(self, *, mode: str, exchange: str, symbol: str) -> Optional[Dict[str, Any]]:
+        """Fetch current position row (if any)."""
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT mode, exchange, symbol, base_qty, avg_entry_price, realized_pnl, updated_at
+            FROM positions
+            WHERE mode = ? AND exchange = ? AND symbol = ?
+            """,
+            (mode, exchange, symbol),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def upsert_position(
+        self,
+        *,
+        mode: str,
+        exchange: str,
+        symbol: str,
+        base_qty: float,
+        avg_entry_price: Optional[float],
+        realized_pnl: float,
+    ) -> None:
+        """Upsert position state."""
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO positions (mode, exchange, symbol, base_qty, avg_entry_price, realized_pnl, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(mode, exchange, symbol) DO UPDATE SET
+                base_qty = excluded.base_qty,
+                avg_entry_price = excluded.avg_entry_price,
+                realized_pnl = excluded.realized_pnl,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (mode, exchange, symbol, base_qty, avg_entry_price, realized_pnl),
+        )
+        self.conn.commit()
 

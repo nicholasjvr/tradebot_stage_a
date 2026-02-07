@@ -4,7 +4,7 @@ Exchange interface using ccxt library
 import time
 import ccxt
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from ccxt.base.errors import NetworkError, DDoSProtection, RateLimitExceeded, ExchangeError
 from .config import EXCHANGE_NAME, EXCHANGE_API_KEY, EXCHANGE_SECRET, EXCHANGE_SANDBOX, PUBLIC_ONLY
 
@@ -123,4 +123,57 @@ class Exchange:
         except Exception as e:
             logger.error(f"Error validating symbol {symbol}: {e}")
             return False
+
+    # -----------------------------
+    # Stage B: Authenticated helpers
+    # -----------------------------
+    def amount_to_precision(self, symbol: str, amount: float) -> str:
+        return self.exchange.amount_to_precision(symbol, amount)
+
+    def price_to_precision(self, symbol: str, price: float) -> str:
+        return self.exchange.price_to_precision(symbol, price)
+
+    def fetch_balance(self) -> Dict[str, Any]:
+        """Fetch account balances (requires PUBLIC_ONLY=false)."""
+        if PUBLIC_ONLY:
+            raise RuntimeError("PUBLIC_ONLY=true: authenticated endpoints are disabled")
+        return self._request_with_backoff(self.exchange.fetch_balance)
+
+    def get_free_balance(self, asset: str) -> float:
+        """Return free balance for an asset (requires PUBLIC_ONLY=false)."""
+        bal = self.fetch_balance()
+        free = bal.get("free", {}).get(asset)
+        if free is None:
+            # ccxt may return top-level currency objects too
+            cur = bal.get(asset) or {}
+            free = cur.get("free", 0.0)
+        return float(free or 0.0)
+
+    def create_order(
+        self,
+        *,
+        symbol: str,
+        order_type: str,
+        side: str,
+        amount: float,
+        price: Optional[float] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create an order (requires PUBLIC_ONLY=false).
+
+        Note: For market orders, `price` must be None.
+        """
+        if PUBLIC_ONLY:
+            raise RuntimeError("PUBLIC_ONLY=true: order placement is disabled")
+        params = params or {}
+        if order_type == "market":
+            price = None
+        try:
+            return self._request_with_backoff(self.exchange.create_order, symbol, order_type, side, amount, price, params)
+        except ExchangeError:
+            raise
+        except Exception as e:
+            logger.error(f"Error creating order symbol={symbol} side={side} type={order_type}: {e}")
+            raise
 

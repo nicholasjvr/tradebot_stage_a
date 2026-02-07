@@ -138,6 +138,58 @@ python -m bot.backfill --symbol BTC/USDT
 python -m bot.backfill --hours 24
 ```
 
+### Trading (Stage B) — paper first, then live
+
+Stage B adds a simple **SMA crossover** trader that can run in **paper mode** first, and (optionally) in **live mode** with explicit safety gates.
+
+- **Paper mode**: no real orders, writes simulated orders/fills/positions to SQLite.
+- **Live mode**: places real spot orders via ccxt, only if you explicitly enable it.
+
+#### 1) Make sure you have market data
+
+The trader reads candles from SQLite. Start the collector first (or backfill), and make sure you have at least `SMA_SLOW_WINDOW` candles per symbol/timeframe.
+
+#### 2) (Optional) Configure live trading safety flags
+
+In `tradebot/.env`:
+
+```bash
+# Stage A / Stage B safety
+PUBLIC_ONLY=true                 # keep true for paper trading
+ENABLE_LIVE_TRADING=false        # must be true for live trading
+
+# Stage B defaults (interactive prompts can override)
+TRADING_MODE=paper               # paper | live
+ORDER_TYPE=market                # market | limit
+FIXED_QUOTE_AMOUNT=25            # USDT per buy
+SMA_FAST_WINDOW=10
+SMA_SLOW_WINDOW=30
+TRADER_INTERVAL=60
+PAPER_FEE_RATE=0.001
+```
+
+To allow **live** orders you must set:
+- `PUBLIC_ONLY=false`
+- `ENABLE_LIVE_TRADING=true`
+
+The runner will also ask you to type `LIVE` before it will place real orders.
+
+#### 3) Start the trader
+
+```bash
+python -m bot.trader
+```
+
+You’ll be prompted for:
+- symbols
+- timeframe
+- paper vs live mode
+- fixed USDT amount per trade
+- SMA fast/slow windows
+- loop interval
+
+Logs are written to `logs/trader_YYYYMMDD.log`.
+
 ## Database Schema
 
 ### OHLCV Table
@@ -163,6 +215,12 @@ Stores ticker/snapshot data:
 - `high`, `low`, `open`, `close`: Price data
 - `volume`, `quote_volume`: Volume data
 - `created_at`: Record creation timestamp
+
+### Trading Tables (Stage B)
+
+- `orders`: paper/live order attempts + outcomes
+- `fills`: best-effort fill records
+- `positions`: a local position snapshot used by the strategy state machine (best-effort for live)
 
 ## Systemd Service
 
