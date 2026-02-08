@@ -66,6 +66,7 @@ python -m bot.collector
 ```
 
 The collector will:
+
 - Connect to the configured exchange
 - Validate symbols
 - Collect OHLCV and ticker data at the specified interval
@@ -91,6 +92,35 @@ python -m bot.collector
 
 The collector runs continuously, collecting data every `COLLECTION_INTERVAL` seconds. Press `Ctrl+C` to stop gracefully.
 
+#### Multi-timeframe collection
+
+Collect a single higher timeframe (5m):
+
+```bash
+TIMEFRAME=5m python -m bot.collector
+```
+
+Collect 1m + 5m + 15m together into the same SQLite DB:
+
+```bash
+MULTI_TIMEFRAMES=1m,5m,15m python -m bot.collector
+```
+
+Override symbols/timeframes via CLI:
+
+```bash
+python -m bot.collector --symbols BTC/USDT,ETH/USDT --timeframes 1m,5m,15m
+```
+
+Example env vars:
+
+```bash
+SYMBOLS=BTC/USDT,ETH/USDT
+MULTI_TIMEFRAMES=1m,5m,15m
+# Optional override for all timeframes (seconds)
+COLLECTION_INTERVAL=60
+```
+
 ### Data Validation
 
 Check data quality and completeness:
@@ -100,6 +130,7 @@ python -m bot.validate
 ```
 
 This will show:
+
 - Record counts
 - Latest data timestamps
 - Data quality checks (nulls, invalid OHLC relationships)
@@ -169,6 +200,7 @@ PAPER_FEE_RATE=0.001
 ```
 
 To allow **live** orders you must set:
+
 - `PUBLIC_ONLY=false`
 - `ENABLE_LIVE_TRADING=true`
 
@@ -181,6 +213,7 @@ python -m bot.trader
 ```
 
 You’ll be prompted for:
+
 - symbols
 - timeframe
 - paper vs live mode
@@ -295,15 +328,18 @@ tradebot/
 ## Troubleshooting
 
 ### "No valid symbols found"
+
 - Check that symbols are correctly formatted (e.g., 'BTC/USDT' not 'BTCUSDT')
 - Verify exchange name is correct
 - Check internet connection
 
 ### "Database locked" errors
+
 - Ensure only one collector instance is running
 - Check for stale database connections
 
 ### High memory usage
+
 - Reduce number of symbols
 - Increase `COLLECTION_INTERVAL` to collect less frequently
 - Consider archiving old data
@@ -311,4 +347,3 @@ tradebot/
 ## License
 
 MIT License - feel free to use and modify as needed!
-

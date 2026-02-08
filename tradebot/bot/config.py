@@ -29,6 +29,7 @@ EXCHANGE_SANDBOX = os.getenv("EXCHANGE_SANDBOX", "false").lower() == "true"
 # Trading configuration
 SYMBOLS = os.getenv("SYMBOLS", "BTC/USDT,ETH/USDT").split(",")
 TIMEFRAME = os.getenv("TIMEFRAME", "1m")
+MULTI_TIMEFRAMES = os.getenv("MULTI_TIMEFRAMES", "").strip()
 COLLECTION_INTERVAL = int(os.getenv("COLLECTION_INTERVAL", "60"))  # seconds
 
 # -----------------------------

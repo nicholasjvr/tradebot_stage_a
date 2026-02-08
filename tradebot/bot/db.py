@@ -163,6 +163,10 @@ class Database:
         """)
         
         # Create indexes for faster queries
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ohlcv_symbol_timeframe_timestamp "
+            "ON ohlcv(symbol, timeframe, timestamp)"
+        )
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_ohlcv_symbol_timeframe ON ohlcv(symbol, timeframe)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_ohlcv_timestamp ON ohlcv(timestamp)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickers_symbol ON tickers(symbol)")
