@@ -19,6 +19,12 @@
     .chart-container { position: relative; height: 280px; }
     .error { color: #ff6b6b; margin-top: 0.5rem; }
     .loading { color: #aaa; }
+    .sql-ref { margin: 0 0 0.5rem 0; color: #888; font-size: 0.9rem; }
+    .sql-ref code { font-size: 0.85rem; }
+    table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.85rem; }
+    th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #333; }
+    th { color: #a0a0c0; font-weight: 600; }
+    .data-table-wrap { overflow-x: auto; max-height: 220px; overflow-y: auto; }
   </style>
 </head>
 <body>
@@ -28,8 +34,8 @@
   <div class="chart-wrap">
     <h2>OHLCV close price (from <code>/ohlcv</code>)</h2>
     <div class="controls">
-      <label>Symbol <input type="text" id="symbol" value="BTC/USDT" placeholder="e.g. BTC/USDT"></label>
-      <label>Limit <input type="number" id="limit" value="100" min="10" max="500"></label>
+      <label>Symbol <select id="symbol"><option value="BTC/USDT">BTC/USDT</option></select></label>
+      <label>Limit <select id="limit"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
       <button id="loadOhlcv">Load &amp; chart</button>
     </div>
     <div class="chart-container"><canvas id="ohlcvChart"></canvas></div>
@@ -38,9 +44,32 @@
 
   <div class="chart-wrap">
     <h2>Candle counts per symbol/timeframe (from <code>/chart/candle_counts</code>)</h2>
-    <p style="margin:0 0 0.5rem 0; color:#888;">SQL: <code>SELECT symbol, timeframe, COUNT(*) FROM ohlcv GROUP BY symbol, timeframe</code></p>
+    <p class="sql-ref">SQL: <code>SELECT symbol, timeframe, COUNT(*) FROM ohlcv GROUP BY symbol, timeframe</code></p>
     <div class="chart-container"><canvas id="countsChart"></canvas></div>
     <div id="countsError" class="error"></div>
+  </div>
+
+  <div class="chart-wrap">
+    <h2>Recent orders (from <code>/chart/orders</code>)</h2>
+    <p class="sql-ref">SQL: <code>SELECT id, mode, symbol, side, type, status, amount, price, filled, ts, created_at FROM orders ORDER BY ts DESC LIMIT 15</code></p>
+    <div class="chart-container"><canvas id="ordersChart"></canvas></div>
+    <div class="data-table-wrap"><table id="ordersTable"><thead><tr><th>id</th><th>mode</th><th>symbol</th><th>side</th><th>type</th><th>status</th><th>amount</th><th>price</th><th>filled</th><th>ts</th></tr></thead><tbody></tbody></table></div>
+    <div id="ordersError" class="error"></div>
+  </div>
+
+  <div class="chart-wrap">
+    <h2>Recent fills (from <code>/chart/fills</code>)</h2>
+    <p class="sql-ref">SQL: <code>SELECT f.id, f.symbol, f.side, f.price, f.amount, f.cost, f.ts, f.order_id FROM fills f ORDER BY f.ts DESC LIMIT 10</code></p>
+    <div class="data-table-wrap"><table id="fillsTable"><thead><tr><th>id</th><th>symbol</th><th>side</th><th>price</th><th>amount</th><th>cost</th><th>ts</th><th>order_id</th></tr></thead><tbody></tbody></table></div>
+    <div id="fillsError" class="error"></div>
+  </div>
+
+  <div class="chart-wrap">
+    <h2>Current positions (from <code>/chart/positions</code>)</h2>
+    <p class="sql-ref">SQL: <code>SELECT mode, exchange, symbol, base_qty, avg_entry_price, realized_pnl, updated_at FROM positions ORDER BY symbol</code></p>
+    <div class="chart-container"><canvas id="positionsChart"></canvas></div>
+    <div class="data-table-wrap"><table id="positionsTable"><thead><tr><th>mode</th><th>exchange</th><th>symbol</th><th>base_qty</th><th>avg_entry_price</th><th>realized_pnl</th><th>updated_at</th></tr></thead><tbody></tbody></table></div>
+    <div id="positionsError" class="error"></div>
   </div>
 
   <script>
@@ -50,7 +79,7 @@
     let ohlcvChart = null;
     document.getElementById('loadOhlcv').addEventListener('click', loadOhlcv);
     async function loadOhlcv() {
-      const symbol = document.getElementById('symbol').value.trim();
+      const symbol = document.getElementById('symbol').value;
       const limit = document.getElementById('limit').value;
       const errEl = document.getElementById('ohlcvError');
       errEl.textContent = 'Loading…';
@@ -123,8 +152,92 @@
       }
     })();
 
-    // Load OHLCV on first paint
-    loadOhlcv();
+    // Orders: bar chart by status + table
+    (async function loadOrders() {
+      const errEl = document.getElementById('ordersError');
+      const tbody = document.querySelector('#ordersTable tbody');
+      errEl.textContent = 'Loading…';
+      try {
+        const r = await fetch(apiBase + '/chart/orders?limit=15');
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        errEl.textContent = '';
+        const byStatus = {};
+        data.forEach(row => { byStatus[row.status] = (byStatus[row.status] || 0) + 1; });
+        const statusLabels = Object.keys(byStatus);
+        const statusCounts = statusLabels.map(s => byStatus[s]);
+        if (statusLabels.length) {
+          if (window.ordersChart) window.ordersChart.destroy();
+          window.ordersChart = new Chart(document.getElementById('ordersChart'), {
+            type: 'bar',
+            data: { labels: statusLabels, datasets: [{ label: 'Orders', data: statusCounts, backgroundColor: '#4361ee88' }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#eee' } } }, scales: { x: { ticks: { color: '#aaa' } }, y: { ticks: { color: '#aaa' } } } }
+          });
+        }
+        tbody.innerHTML = data.length ? data.map(row => `<tr><td>${row.id}</td><td>${row.mode}</td><td>${row.symbol}</td><td>${row.side}</td><td>${row.type}</td><td>${row.status}</td><td>${row.amount != null ? row.amount : ''}</td><td>${row.price != null ? row.price : ''}</td><td>${row.filled != null ? row.filled : ''}</td><td>${row.ts != null ? new Date(row.ts).toLocaleString() : ''}</td></tr>`).join('') : '<tr><td colspan="10">No orders</td></tr>';
+      } catch (e) {
+        errEl.textContent = 'Error: ' + e.message;
+      }
+    })();
+
+    // Fills: table only
+    (async function loadFills() {
+      const errEl = document.getElementById('fillsError');
+      const tbody = document.querySelector('#fillsTable tbody');
+      errEl.textContent = 'Loading…';
+      try {
+        const r = await fetch(apiBase + '/chart/fills?limit=10');
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        errEl.textContent = '';
+        tbody.innerHTML = data.length ? data.map(row => `<tr><td>${row.id}</td><td>${row.symbol}</td><td>${row.side}</td><td>${row.price}</td><td>${row.amount}</td><td>${row.cost}</td><td>${row.ts != null ? new Date(row.ts).toLocaleString() : ''}</td><td>${row.order_id != null ? row.order_id : ''}</td></tr>`).join('') : '<tr><td colspan="8">No fills</td></tr>';
+      } catch (e) {
+        errEl.textContent = 'Error: ' + e.message;
+      }
+    })();
+
+    // Positions: bar chart by symbol (realized_pnl) + table
+    (async function loadPositions() {
+      const errEl = document.getElementById('positionsError');
+      const tbody = document.querySelector('#positionsTable tbody');
+      errEl.textContent = 'Loading…';
+      try {
+        const r = await fetch(apiBase + '/chart/positions');
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        errEl.textContent = '';
+        if (data.length) {
+          if (window.positionsChart) window.positionsChart.destroy();
+          const labels = data.map(row => row.symbol);
+          const pnl = data.map(row => row.realized_pnl != null ? row.realized_pnl : 0);
+          window.positionsChart = new Chart(document.getElementById('positionsChart'), {
+            type: 'bar',
+            data: { labels, datasets: [{ label: 'Realized PnL', data: pnl, backgroundColor: pnl.map(v => v >= 0 ? '#22c55e88' : '#ef444488') }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#eee' } } }, scales: { x: { ticks: { color: '#aaa' } }, y: { ticks: { color: '#aaa' } } } }
+          });
+        }
+        tbody.innerHTML = data.length ? data.map(row => `<tr><td>${row.mode}</td><td>${row.exchange}</td><td>${row.symbol}</td><td>${row.base_qty}</td><td>${row.avg_entry_price != null ? row.avg_entry_price : ''}</td><td>${row.realized_pnl != null ? row.realized_pnl : ''}</td><td>${row.updated_at || ''}</td></tr>`).join('') : '<tr><td colspan="7">No positions</td></tr>';
+      } catch (e) {
+        errEl.textContent = 'Error: ' + e.message;
+      }
+    })();
+
+    // Populate symbol dropdown from API, then load OHLCV
+    (async function initSymbolDropdown() {
+      const sel = document.getElementById('symbol');
+      try {
+        const r = await fetch(apiBase + '/chart/symbols');
+        if (r.ok) {
+          const symbols = await r.json();
+          if (symbols.length) {
+            sel.innerHTML = symbols.map(s => `<option value="${s}">${s}</option>`).join('');
+            const hasBtc = symbols.includes('BTC/USDT');
+            if (hasBtc) sel.value = 'BTC/USDT';
+          }
+        }
+      } catch (_) {}
+      loadOhlcv();
+    })();
   </script>
 </body>
 </html>

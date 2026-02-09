@@ -50,6 +50,71 @@ ls -la ~/venvs/*/bin/python 2>/dev/null || true
 
 ---
 
+## Testing edits before deploying to the Pi
+
+Test on your **dev machine (e.g. Windows)** so you catch import errors, API bugs, and missing deps before touching the Pi.
+
+### 1) Use a venv and install deps (same as Pi)
+
+```powershell
+cd N:\rasberry_pi_projects\tradebot_stage_a\tradebot
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+(If you already have a venv, just activate it and `pip install -r requirements.txt`.)
+
+### 2) Ensure the DB exists (optional but recommended)
+
+If you don’t have `tradebot/db/marketdata.sqlite` yet:
+
+```powershell
+cd N:\rasberry_pi_projects\tradebot_stage_a\tradebot
+python -m scripts.init_db
+```
+
+You can also copy `marketdata.sqlite` from the Pi to `tradebot/db/` for more realistic data.
+
+### 3) “Did it import?” check
+
+```powershell
+cd N:\rasberry_pi_projects\tradebot_stage_a\tradebot
+python -m bot.validate
+```
+
+If this fails, fix imports/config before deploying.
+
+### 4) Smoke-test the API (no browser needed)
+
+```powershell
+cd N:\rasberry_pi_projects\tradebot_stage_a\tradebot
+python -m scripts.smoke_test_api
+```
+
+(On Windows, if `python` isn’t in PATH, use `py -m scripts.smoke_test_api` or run after activating your venv.)
+
+This hits the main endpoints with Flask’s test client (no server). All checks should pass.
+
+### 5) Manual run: API + dashboard
+
+```powershell
+cd N:\rasberry_pi_projects\tradebot_stage_a\tradebot
+python api.py
+```
+
+Then open in a browser:
+
+- http://localhost:5000/ — API info
+- http://localhost:5000/dashboard — charts
+- http://localhost:5000/ohlcv?symbol=BTC/USDT&limit=10 — raw JSON
+
+Stop with `Ctrl+C` when done. If this works on your machine, the same code should behave the same on the Pi (same Python, same SQLite, same Flask).
+
+**Tip:** Before every `git push` (or before you copy code to the Pi), run steps 3 and 4. That’s your “test before deploy” gate.
+
+---
+
 ## Update flow (systemd service installed)
 
 This is the “production-style” update if you’re running `tradebot.service`.

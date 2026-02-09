@@ -50,14 +50,72 @@ def get_tickers():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/chart/symbols")
+def chart_symbols():
+    """Distinct symbols from ohlcv (for dropdowns)."""
+    try:
+        with Database() as db:
+            rows = db.conn.execute(
+                "SELECT DISTINCT symbol FROM ohlcv ORDER BY symbol"
+            ).fetchall()
+        return jsonify([row["symbol"] for row in rows])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/chart/candle_counts")
-def chart_candle_counts():
     """Chart-ready data: candle counts per symbol/timeframe (SQL → JSON for charts)."""
     try:
         with Database() as db:
             rows = db.conn.execute(
                 "SELECT symbol, timeframe, COUNT(*) AS candle_count "
                 "FROM ohlcv GROUP BY symbol, timeframe ORDER BY symbol, timeframe"
+            ).fetchall()
+        return jsonify([dict(row) for row in rows])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/chart/orders")
+def chart_orders():
+    """Recent orders (paper or live). Query param: limit (default 15)."""
+    limit = min(int(request.args.get("limit", 15)), 100)
+    try:
+        with Database() as db:
+            rows = db.conn.execute(
+                "SELECT id, mode, symbol, side, type, status, amount, price, filled, ts, created_at "
+                "FROM orders ORDER BY ts DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return jsonify([dict(row) for row in rows])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/chart/fills")
+def chart_fills():
+    """Recent fills with order link. Query param: limit (default 10)."""
+    limit = min(int(request.args.get("limit", 10)), 100)
+    try:
+        with Database() as db:
+            rows = db.conn.execute(
+                "SELECT f.id, f.symbol, f.side, f.price, f.amount, f.cost, f.ts, f.order_id "
+                "FROM fills f ORDER BY f.ts DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return jsonify([dict(row) for row in rows])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/chart/positions")
+def chart_positions():
+    """Current positions (paper or live)."""
+    try:
+        with Database() as db:
+            rows = db.conn.execute(
+                "SELECT mode, exchange, symbol, base_qty, avg_entry_price, realized_pnl, updated_at "
+                "FROM positions ORDER BY symbol"
             ).fetchall()
         return jsonify([dict(row) for row in rows])
     except Exception as e:
@@ -78,7 +136,11 @@ def index():
         "endpoints": {
             "/ohlcv?symbol=BTC/USDT&limit=100": "Get OHLCV data",
             "/tickers?symbol=BTC/USDT&limit=100": "Get ticker data",
-            "/chart/candle_counts": "Candle counts per symbol/timeframe (for charts)",
+            "/chart/symbols": "Distinct symbols (for dropdowns)",
+            "/chart/candle_counts": "Candle counts per symbol/timeframe",
+            "/chart/orders?limit=15": "Recent orders",
+            "/chart/fills?limit=10": "Recent fills",
+            "/chart/positions": "Current positions",
             "/dashboard": "Web dashboard with charts"
         }
     })
