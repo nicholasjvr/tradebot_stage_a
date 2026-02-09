@@ -22,7 +22,7 @@ from .config import (
     PUBLIC_ONLY,
     ENABLE_LIVE_TRADING,
     SYMBOLS as ENV_SYMBOLS,
-    TIMEFRAME as ENV_TIMEFRAME,
+    TRADER_TIMEFRAME as ENV_TRADER_TIMEFRAME,
     TRADING_MODE as ENV_TRADING_MODE,
     ORDER_TYPE as ENV_ORDER_TYPE,
     FIXED_QUOTE_AMOUNT as ENV_FIXED_QUOTE_AMOUNT,
@@ -30,6 +30,7 @@ from .config import (
     SMA_SLOW_WINDOW as ENV_SMA_SLOW,
     TRADER_INTERVAL as ENV_TRADER_INTERVAL,
     PAPER_FEE_RATE as ENV_PAPER_FEE_RATE,
+    DAILY_BUDGET_QUOTE as ENV_DAILY_BUDGET_QUOTE,
 )
 from .db import Database
 from .exchange import Exchange
@@ -121,7 +122,7 @@ class Trader:
         logger.info("=" * 60)
 
         symbols = _parse_symbols(_prompt_str("Symbols (comma-separated)", ",".join([s.strip() for s in ENV_SYMBOLS])))
-        timeframe = _prompt_str("Timeframe", ENV_TIMEFRAME)
+        timeframe = _prompt_str("Timeframe", ENV_TRADER_TIMEFRAME)
         mode = _prompt_str("Mode (paper/live)", ENV_TRADING_MODE).lower()
         order_type = _prompt_str("Order type (market/limit)", ENV_ORDER_TYPE).lower()
         fixed_quote_amount = _prompt_float("Fixed quote amount per BUY (USDT)", float(ENV_FIXED_QUOTE_AMOUNT))
@@ -388,6 +389,14 @@ class Trader:
                 if want_long and not is_long:
                     if self.cfg.mode == "paper":
                         enforce_min_notional(quote_amount=self.cfg.fixed_quote_amount)
+                        if ENV_DAILY_BUDGET_QUOTE is not None and ENV_DAILY_BUDGET_QUOTE > 0:
+                            spent_today = self.db.get_paper_spent_today()
+                            if spent_today + self.cfg.fixed_quote_amount > ENV_DAILY_BUDGET_QUOTE:
+                                logger.info(
+                                    f"[TRADER] symbol={symbol} action=skip_buy reason=daily_budget "
+                                    f"spent_today={spent_today:.2f} budget={ENV_DAILY_BUDGET_QUOTE}"
+                                )
+                                continue
                         paper_buy_fixed_quote(
                             db=self.db,
                             exchange=EXCHANGE_NAME,

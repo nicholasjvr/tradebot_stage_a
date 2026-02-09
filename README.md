@@ -43,7 +43,9 @@ PUBLIC_ONLY=true           # Stage A safety guard
 
 # Trading Configuration
 SYMBOLS=BTC/USDT,ETH/USDT  # Comma-separated list
-TIMEFRAME=1m               # 1m, 5m, 15m, 1h, 4h, 1d, etc.
+TIMEFRAME=1m               # Collector fetches 1m only; resampled to 5m, 7m, 30m
+RESAMPLE_TO=5m,7m,30m     # Timeframes built from 1m (trader uses 7m)
+TRADER_TIMEFRAME=7m        # Strategy runs on 7m candles (default at trader prompt)
 COLLECTION_INTERVAL=60     # Seconds between collection cycles
 ```
 
@@ -197,6 +199,13 @@ SMA_FAST_WINDOW=10
 SMA_SLOW_WINDOW=30
 TRADER_INTERVAL=60
 PAPER_FEE_RATE=0.001
+
+# Optional: cap paper spending per day (quote currency, e.g. USDT). 1000 ZAR/day ≈ 55 USDT.
+# DAILY_BUDGET_QUOTE=55
+# Optional: PnL threshold (USDT) for dashboard "above/below threshold" indicator.
+# PNL_THRESHOLD=10
+# Optional: show amounts in ZAR on dashboard (rate = ZAR per 1 USDT, e.g. 18.5).
+# ZAR_PER_USDT=18.5
 ```
 
 To allow **live** orders you must set:

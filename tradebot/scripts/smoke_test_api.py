@@ -33,7 +33,7 @@ def main():
         print("GET /ohlcv ->", r.status_code)
 
     # Chart endpoints
-    for path in ["/chart/symbols", "/chart/candle_counts", "/chart/orders", "/chart/fills", "/chart/positions"]:
+    for path in ["/chart/symbols", "/chart/candle_counts", "/chart/orders", "/chart/fills", "/chart/positions", "/chart/pnl_summary"]:
         r = client.get(path)
         if r.status_code not in (200, 500):
             failed.append(f"GET {path} -> {r.status_code}")

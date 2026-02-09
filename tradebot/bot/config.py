@@ -28,8 +28,14 @@ EXCHANGE_SANDBOX = os.getenv("EXCHANGE_SANDBOX", "false").lower() == "true"
 
 # Trading configuration
 SYMBOLS = os.getenv("SYMBOLS", "BTC/USDT,ETH/USDT").split(",")
+# Collector: use 1m only so we can resample to 5m, 7m, 30m
 TIMEFRAME = os.getenv("TIMEFRAME", "1m")
 MULTI_TIMEFRAMES = os.getenv("MULTI_TIMEFRAMES", "").strip()
+# Timeframes to build from 1m (comma-separated, e.g. 5m,7m,30m). Trader uses 7m.
+RESAMPLE_TO = os.getenv("RESAMPLE_TO", "5m,7m,30m").strip()
+RESAMPLE_TO = [t.strip() for t in RESAMPLE_TO.split(",") if t.strip()] if RESAMPLE_TO else []
+# Trader strategy runs on this timeframe (must be in RESAMPLE_TO or collected)
+TRADER_TIMEFRAME = os.getenv("TRADER_TIMEFRAME", "7m").strip() or "7m"
 COLLECTION_INTERVAL = int(os.getenv("COLLECTION_INTERVAL", "60"))  # seconds
 
 # -----------------------------
@@ -59,6 +65,28 @@ TRADER_INTERVAL = int(os.getenv("TRADER_INTERVAL", str(COLLECTION_INTERVAL)))
 
 # Paper trading assumptions
 PAPER_FEE_RATE = float(os.getenv("PAPER_FEE_RATE", "0.001"))  # 0.1% default
+
+# Daily budget for paper trading (quote currency, e.g. USDT). No limit if unset or 0.
+# Example: 1000 ZAR/day ≈ 55 USDT → set DAILY_BUDGET_QUOTE=55
+_raw_budget = os.getenv("DAILY_BUDGET_QUOTE", "").strip()
+try:
+    DAILY_BUDGET_QUOTE = float(_raw_budget) if _raw_budget else None
+except ValueError:
+    DAILY_BUDGET_QUOTE = None
+
+# Optional PnL threshold (USDT) for dashboard: "above/below threshold" indicator.
+_raw_threshold = os.getenv("PNL_THRESHOLD", "").strip()
+try:
+    PNL_THRESHOLD = float(_raw_threshold) if _raw_threshold else None
+except ValueError:
+    PNL_THRESHOLD = None
+
+# Optional: show amounts in ZAR on dashboard. Rate = how many ZAR per 1 USDT (e.g. 18.5).
+_raw_zar = os.getenv("ZAR_PER_USDT", "").strip()
+try:
+    ZAR_PER_USDT = float(_raw_zar) if _raw_zar else None
+except ValueError:
+    ZAR_PER_USDT = None
 
 # Ensure directories exist
 DB_DIR.mkdir(exist_ok=True)

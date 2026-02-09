@@ -25,11 +25,31 @@
     th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #333; }
     th { color: #a0a0c0; font-weight: 600; }
     .data-table-wrap { overflow-x: auto; max-height: 220px; overflow-y: auto; }
+    .pnl-summary { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin: 0.5rem 0; }
+    .pnl-summary span { color: #a0a0c0; }
+    .pnl-summary strong { color: #eee; margin-left: 0.25rem; }
+    .threshold-badge { padding: 0.35rem 0.75rem; border-radius: 8px; font-weight: 600; }
+    .threshold-badge.above { background: #22c55e33; color: #22c55e; }
+    .threshold-badge.below { background: #ef444433; color: #ef4444; }
+    .threshold-badge.none { background: #444; color: #aaa; }
   </style>
 </head>
 <body>
   <h1>Tradebot – SQL → Charts</h1>
   <p>Charts are built from your API, which runs SQL against <code>marketdata.sqlite</code>.</p>
+
+  <div class="chart-wrap">
+    <h2>Paper trading: PnL vs threshold (from <code>/chart/pnl_summary</code>)</h2>
+    <p class="sql-ref">How much the bot is making (realized PnL) and spent today vs daily budget and threshold.</p>
+    <div class="pnl-summary" id="pnlSummary">
+      <span>Realized PnL</span><strong id="pnlRealized">—</strong>
+      <span>Spent today</span><strong id="pnlSpent">—</strong>
+      <span>Daily budget</span><strong id="pnlBudget">—</strong>
+      <span>Threshold</span><strong id="pnlThreshold">—</strong>
+      <span id="pnlBadge" class="threshold-badge none">—</span>
+    </div>
+    <div id="pnlError" class="error"></div>
+  </div>
 
   <div class="chart-wrap">
     <h2>OHLCV close price (from <code>/ohlcv</code>)</h2>
@@ -217,6 +237,37 @@
           });
         }
         tbody.innerHTML = data.length ? data.map(row => `<tr><td>${row.mode}</td><td>${row.exchange}</td><td>${row.symbol}</td><td>${row.base_qty}</td><td>${row.avg_entry_price != null ? row.avg_entry_price : ''}</td><td>${row.realized_pnl != null ? row.realized_pnl : ''}</td><td>${row.updated_at || ''}</td></tr>`).join('') : '<tr><td colspan="7">No positions</td></tr>';
+      } catch (e) {
+        errEl.textContent = 'Error: ' + e.message;
+      }
+    })();
+
+    // PnL summary (paper trading: realized PnL, spent today, threshold; ZAR if ZAR_PER_USDT set)
+    (async function loadPnlSummary() {
+      const errEl = document.getElementById('pnlError');
+      try {
+        const r = await fetch(apiBase + '/chart/pnl_summary');
+        if (!r.ok) throw new Error(await r.text());
+        const d = await r.json();
+        const zar = (obj, usdKey, zarKey) => {
+          if (obj[usdKey] == null) return '—';
+          let s = obj[usdKey].toFixed(2) + ' USDT';
+          if (obj[zarKey] != null) s += ' (' + obj[zarKey].toFixed(2) + ' ZAR)';
+          return s;
+        };
+        document.getElementById('pnlRealized').textContent = zar(d, 'realized_pnl', 'realized_pnl_zar');
+        document.getElementById('pnlSpent').textContent = zar(d, 'spent_today', 'spent_today_zar');
+        document.getElementById('pnlBudget').textContent = d.daily_budget != null
+          ? d.daily_budget + ' USDT' + (d.daily_budget_zar != null ? ' (' + d.daily_budget_zar.toFixed(2) + ' ZAR)' : '')
+          : 'No limit';
+        document.getElementById('pnlThreshold').textContent = d.pnl_threshold != null
+          ? d.pnl_threshold + ' USDT' + (d.pnl_threshold_zar != null ? ' (' + d.pnl_threshold_zar.toFixed(2) + ' ZAR)' : '')
+          : 'Not set';
+        const badge = document.getElementById('pnlBadge');
+        if (d.above_threshold === true) { badge.textContent = 'Above threshold'; badge.className = 'threshold-badge above'; }
+        else if (d.above_threshold === false) { badge.textContent = 'Below threshold'; badge.className = 'threshold-badge below'; }
+        else { badge.textContent = 'No threshold set'; badge.className = 'threshold-badge none'; }
+        errEl.textContent = '';
       } catch (e) {
         errEl.textContent = 'Error: ' + e.message;
       }

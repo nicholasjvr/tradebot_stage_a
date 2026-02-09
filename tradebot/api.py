@@ -7,6 +7,7 @@ Charts: http://localhost:5000/dashboard
 from flask import Flask, request, jsonify, send_from_directory
 from pathlib import Path
 from bot.db import Database
+from bot.config import DAILY_BUDGET_QUOTE, PNL_THRESHOLD, ZAR_PER_USDT
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -123,6 +124,34 @@ def chart_positions():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/chart/pnl_summary")
+def chart_pnl_summary():
+    """Paper trading: realized PnL, spent today, daily budget, and vs threshold."""
+    try:
+        with Database() as db:
+            realized_pnl = db.get_paper_realized_pnl_total()
+            spent_today = db.get_paper_spent_today()
+        above_threshold = None
+        if PNL_THRESHOLD is not None:
+            above_threshold = realized_pnl >= PNL_THRESHOLD
+        payload = {
+            "realized_pnl": round(realized_pnl, 4),
+            "spent_today": round(spent_today, 4),
+            "daily_budget": DAILY_BUDGET_QUOTE,
+            "pnl_threshold": PNL_THRESHOLD,
+            "above_threshold": above_threshold,
+        }
+        if ZAR_PER_USDT is not None and ZAR_PER_USDT > 0:
+            payload["zar_per_usdt"] = ZAR_PER_USDT
+            payload["realized_pnl_zar"] = round(realized_pnl * ZAR_PER_USDT, 2)
+            payload["spent_today_zar"] = round(spent_today * ZAR_PER_USDT, 2)
+            payload["daily_budget_zar"] = round(DAILY_BUDGET_QUOTE * ZAR_PER_USDT, 2) if DAILY_BUDGET_QUOTE is not None else None
+            payload["pnl_threshold_zar"] = round(PNL_THRESHOLD * ZAR_PER_USDT, 2) if PNL_THRESHOLD is not None else None
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/dashboard")
 def dashboard():
     """Serve the chart dashboard (SQL queries → charts)."""
@@ -142,6 +171,7 @@ def index():
             "/chart/orders?limit=15": "Recent orders",
             "/chart/fills?limit=10": "Recent fills",
             "/chart/positions": "Current positions",
+            "/chart/pnl_summary": "Paper PnL, spent today, budget, threshold",
             "/dashboard": "Web dashboard with charts"
         }
     })

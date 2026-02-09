@@ -10,7 +10,7 @@ import sys
 from datetime import datetime
 from typing import Dict, List, Optional
 from .config import (
-    SYMBOLS, TIMEFRAME, MULTI_TIMEFRAMES, LOGS_DIR,
+    SYMBOLS, TIMEFRAME, MULTI_TIMEFRAMES, RESAMPLE_TO, LOGS_DIR,
     EXCHANGE_NAME
 )
 from .exchange import Exchange
@@ -232,6 +232,14 @@ class Collector:
             try:
                 for timeframe in due_timeframes:
                     self.collect_ohlcv(symbol, timeframe)
+                # Build 5m, 7m, 30m (etc.) from 1m so trader can use 7m
+                for to_tf in RESAMPLE_TO:
+                    try:
+                        ins, upd = self.db.resample_ohlcv(symbol, "1m", to_tf)
+                        if ins or upd:
+                            logger.info(f"[COLLECTOR] symbol={symbol} resample 1m->{to_tf} inserted={ins} updated={upd}")
+                    except Exception as e:
+                        logger.warning(f"[COLLECTOR] symbol={symbol} resample 1m->{to_tf} error={e}")
                 self.collect_ticker(symbol)
             except Exception as e:
                 logger.error(f"[COLLECTOR] symbol={symbol} error=processing_failed detail={e}", exc_info=True)

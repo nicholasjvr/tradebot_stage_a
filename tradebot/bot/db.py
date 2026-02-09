@@ -344,6 +344,35 @@ class Database:
         
         return [dict(row) for row in rows]
 
+    def resample_ohlcv(self, symbol: str, from_tf: str, to_tf: str, limit_1m: int = 5000) -> tuple[int, int]:
+        """
+        Build higher timeframe candles from 1m data and insert into ohlcv.
+        E.g. from_tf='1m', to_tf='7m' groups every 7 one-minute candles into one 7m candle.
+        Returns (inserted, updated) like insert_ohlcv.
+        """
+        self.connect()
+        bucket_ms = self._timeframe_to_ms(to_tf)
+        rows = self.get_ohlcv(symbol, from_tf, limit=limit_1m)
+        if not rows:
+            return 0, 0
+        # Group by bucket start timestamp
+        buckets: Dict[int, List[Dict]] = {}
+        for r in rows:
+            ts = int(r["timestamp"])
+            key = (ts // bucket_ms) * bucket_ms
+            buckets.setdefault(key, []).append(r)
+        # Aggregate: open=first, high=max, low=min, close=last, volume=sum
+        aggregated = []
+        for key in sorted(buckets.keys()):
+            group = buckets[key]
+            open_ = float(group[0]["open"])
+            high = max(float(r["high"]) for r in group)
+            low = min(float(r["low"]) for r in group)
+            close = float(group[-1]["close"])
+            volume = sum(float(r["volume"]) for r in group)
+            aggregated.append([key, open_, high, low, close, volume])
+        return self.insert_ohlcv(symbol, to_tf, aggregated)
+
     # -----------------------------
     # Stage B: Trading helpers
     # -----------------------------
@@ -493,6 +522,31 @@ class Database:
         )
         self.conn.commit()
         return int(cursor.lastrowid)
+
+    def get_paper_spent_today(self) -> float:
+        """Total cost of paper BUY fills today (local date). Used for daily budget cap."""
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT COALESCE(SUM(cost), 0) AS total
+            FROM fills
+            WHERE mode = 'paper' AND side = 'buy'
+              AND date(ts / 1000, 'unixepoch', 'localtime') = date('now', 'localtime')
+            """
+        )
+        row = cursor.fetchone()
+        return float(row["total"]) if row else 0.0
+
+    def get_paper_realized_pnl_total(self) -> float:
+        """Sum of realized_pnl across all paper positions (all-time)."""
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT COALESCE(SUM(realized_pnl), 0) AS total FROM positions WHERE mode = 'paper'"
+        )
+        row = cursor.fetchone()
+        return float(row["total"]) if row else 0.0
 
     def get_position(self, *, mode: str, exchange: str, symbol: str) -> Optional[Dict[str, Any]]:
         """Fetch current position row (if any)."""
