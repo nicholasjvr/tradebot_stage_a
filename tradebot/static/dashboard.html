@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tradebot – SQL to charts</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #1a1a2e; color: #eee; }
+    h1 { margin-top: 0; }
+    .controls { margin-bottom: 1.5rem; display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
+    .controls label { display: flex; align-items: center; gap: 0.5rem; }
+    .controls input, .controls select { padding: 0.4rem 0.6rem; border-radius: 6px; border: 1px solid #444; background: #2a2a3e; color: #eee; }
+    .controls button { padding: 0.5rem 1rem; border-radius: 6px; border: none; background: #4361ee; color: white; cursor: pointer; }
+    .controls button:hover { background: #3651d4; }
+    .chart-wrap { background: #16213e; border-radius: 10px; padding: 1rem; margin-bottom: 1.5rem; max-width: 900px; }
+    .chart-wrap h2 { margin: 0 0 0.5rem 0; font-size: 1rem; color: #a0a0c0; }
+    .chart-container { position: relative; height: 280px; }
+    .error { color: #ff6b6b; margin-top: 0.5rem; }
+    .loading { color: #aaa; }
+  </style>
+</head>
+<body>
+  <h1>Tradebot – SQL → Charts</h1>
+  <p>Charts are built from your API, which runs SQL against <code>marketdata.sqlite</code>.</p>
+
+  <div class="chart-wrap">
+    <h2>OHLCV close price (from <code>/ohlcv</code>)</h2>
+    <div class="controls">
+      <label>Symbol <input type="text" id="symbol" value="BTC/USDT" placeholder="e.g. BTC/USDT"></label>
+      <label>Limit <input type="number" id="limit" value="100" min="10" max="500"></label>
+      <button id="loadOhlcv">Load &amp; chart</button>
+    </div>
+    <div class="chart-container"><canvas id="ohlcvChart"></canvas></div>
+    <div id="ohlcvError" class="error"></div>
+  </div>
+
+  <div class="chart-wrap">
+    <h2>Candle counts per symbol/timeframe (from <code>/chart/candle_counts</code>)</h2>
+    <p style="margin:0 0 0.5rem 0; color:#888;">SQL: <code>SELECT symbol, timeframe, COUNT(*) FROM ohlcv GROUP BY symbol, timeframe</code></p>
+    <div class="chart-container"><canvas id="countsChart"></canvas></div>
+    <div id="countsError" class="error"></div>
+  </div>
+
+  <script>
+    const apiBase = ''; // same origin as the page
+
+    // OHLCV line chart
+    let ohlcvChart = null;
+    document.getElementById('loadOhlcv').addEventListener('click', loadOhlcv);
+    async function loadOhlcv() {
+      const symbol = document.getElementById('symbol').value.trim();
+      const limit = document.getElementById('limit').value;
+      const errEl = document.getElementById('ohlcvError');
+      errEl.textContent = 'Loading…';
+      try {
+        const r = await fetch(apiBase + '/ohlcv?symbol=' + encodeURIComponent(symbol) + '&limit=' + limit);
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        if (!data.length) { errEl.textContent = 'No data for ' + symbol; return; }
+        const sorted = data.slice().sort((a, b) => a.timestamp - b.timestamp);
+        const labels = sorted.map(row => new Date(row.timestamp).toLocaleString());
+        const closes = sorted.map(row => row.close);
+
+        if (!ohlcvChart) {
+          ohlcvChart = new Chart(document.getElementById('ohlcvChart'), {
+            type: 'line',
+            data: { labels, datasets: [{ label: 'Close', data: closes, borderColor: '#4361ee', tension: 0.1, fill: false }] },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: { legend: { labels: { color: '#eee' } } },
+              scales: {
+                x: { ticks: { color: '#aaa', maxTicksLimit: 10 } },
+                y: { ticks: { color: '#aaa' } }
+              }
+            }
+          });
+        } else {
+          ohlcvChart.data.labels = labels;
+          ohlcvChart.data.datasets[0].data = closes;
+          ohlcvChart.data.datasets[0].label = 'Close – ' + symbol;
+          ohlcvChart.update();
+        }
+        errEl.textContent = '';
+      } catch (e) {
+        errEl.textContent = 'Error: ' + e.message;
+      }
+    }
+
+    // Candle counts bar chart (from predefined SQL)
+    (async function loadCandleCounts() {
+      const errEl = document.getElementById('countsError');
+      errEl.textContent = 'Loading…';
+      try {
+        const r = await fetch(apiBase + '/chart/candle_counts');
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        if (!data.length) { errEl.textContent = 'No data.'; return; }
+        const labels = data.map(row => row.symbol + ' ' + row.timeframe);
+        const counts = data.map(row => row.candle_count);
+
+        new Chart(document.getElementById('countsChart'), {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: [{ label: 'Candles', data: counts, backgroundColor: '#4361ee88' }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: '#eee' } } },
+            scales: {
+              x: { ticks: { color: '#aaa' } },
+              y: { ticks: { color: '#aaa' } }
+            }
+          }
+        });
+        errEl.textContent = '';
+      } catch (e) {
+        errEl.textContent = 'Error: ' + e.message;
+      }
+    })();
+
+    // Load OHLCV on first paint
+    loadOhlcv();
+  </script>
+</body>
+</html>
