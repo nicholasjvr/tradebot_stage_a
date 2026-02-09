@@ -64,6 +64,7 @@ def chart_symbols():
 
 
 @app.route("/chart/candle_counts")
+def chart_candle_counts():
     """Chart-ready data: candle counts per symbol/timeframe (SQL → JSON for charts)."""
     try:
         with Database() as db:
