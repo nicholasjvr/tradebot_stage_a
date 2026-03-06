@@ -56,6 +56,14 @@ ORDER_TYPE = os.getenv("ORDER_TYPE", "market").strip().lower()
 # Position sizing (fixed quote amount per buy, in USDT for USDT-quoted symbols)
 FIXED_QUOTE_AMOUNT = float(os.getenv("FIXED_QUOTE_AMOUNT", "25"))
 
+# Strategy: "sma" | "ml"
+STRATEGY = os.getenv("STRATEGY", "sma").strip().lower()
+
+# ML strategy (when STRATEGY=ml)
+ML_MODEL_PATH = os.getenv("ML_MODEL_PATH", "").strip()
+ML_LOOKBACK = int(os.getenv("ML_LOOKBACK", "60"))
+ML_CONFIDENCE_THRESHOLD = float(os.getenv("ML_CONFIDENCE_THRESHOLD", "0.55"))
+
 # Strategy defaults (SMA crossover windows, in number of candles)
 SMA_FAST_WINDOW = int(os.getenv("SMA_FAST_WINDOW", "10"))
 SMA_SLOW_WINDOW = int(os.getenv("SMA_SLOW_WINDOW", "30"))
@@ -88,7 +96,11 @@ try:
 except ValueError:
     ZAR_PER_USDT = None
 
+# Models directory (for ML strategy)
+MODELS_DIR = BASE_DIR / "models"
+
 # Ensure directories exist
 DB_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
+MODELS_DIR.mkdir(exist_ok=True)
 

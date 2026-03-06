@@ -411,6 +411,24 @@ class Database:
         # Reverse into chronological order
         return [dict(r) for r in reversed(rows)]
 
+    def get_recent_ohlcv(self, symbol: str, timeframe: str, limit: int) -> List[Dict[str, Any]]:
+        """Return most recent `limit` OHLCV rows (full columns) ordered ascending by timestamp."""
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT symbol, timeframe, timestamp, open, high, low, close, volume, close_time
+            FROM ohlcv
+            WHERE symbol = ? AND timeframe = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (symbol, timeframe, limit),
+        )
+        rows = cursor.fetchall()
+        # Reverse into chronological order
+        return [dict(r) for r in reversed(rows)]
+
     def insert_order(
         self,
         *,
@@ -547,6 +565,73 @@ class Database:
         )
         row = cursor.fetchone()
         return float(row["total"]) if row else 0.0
+
+    def get_trade_round_trips(
+        self, mode: str, limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Compute round-trip trades from fills (FIFO matching buys to sells).
+        Returns list of dicts: {symbol, ts, side, price, amount, cost, fee, pnl, is_win}.
+        Each sell fill produces one trade with realized pnl.
+        """
+        self.connect()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, symbol, side, price, amount, cost, fee, ts
+            FROM fills
+            WHERE mode = ?
+            ORDER BY ts ASC
+            LIMIT ?
+            """,
+            (mode, min(limit * 50, 5000)),
+        )
+        fills = [dict(row) for row in cursor.fetchall()]
+
+        trades: List[Dict[str, Any]] = []
+        position: Dict[str, tuple] = {}  # symbol -> (qty, cost_basis)
+
+        for f in fills:
+            symbol = f["symbol"]
+            side = f["side"]
+            price = float(f["price"])
+            amount = float(f["amount"])
+            cost = float(f["cost"])
+            fee = float(f["fee"] or 0)
+            ts = f["ts"]
+
+            if symbol not in position:
+                position[symbol] = (0.0, 0.0)
+
+            qty, cost_basis = position[symbol]
+
+            if side == "buy":
+                position[symbol] = (qty + amount, cost_basis + cost)
+            else:
+                if qty <= 0:
+                    continue
+                avg_cost = cost_basis / qty
+                sell_amount = min(amount, qty)
+                trade_pnl = (price - avg_cost) * sell_amount - fee
+                position[symbol] = (
+                    qty - sell_amount,
+                    cost_basis - avg_cost * sell_amount,
+                )
+                trades.append(
+                    {
+                        "symbol": symbol,
+                        "ts": ts,
+                        "side": side,
+                        "price": price,
+                        "amount": sell_amount,
+                        "cost": price * sell_amount,
+                        "fee": fee,
+                        "pnl": round(trade_pnl, 6),
+                        "is_win": trade_pnl > 0,
+                    }
+                )
+
+        return trades[-limit:] if len(trades) > limit else trades
 
     def get_position(self, *, mode: str, exchange: str, symbol: str) -> Optional[Dict[str, Any]]:
         """Fetch current position row (if any)."""

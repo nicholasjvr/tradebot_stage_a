@@ -1,5 +1,4 @@
-Updt
-
+Update tradebot_stage_a
 
 # 1) Stop the running service (avoids half-updated code running)
 sudo systemctl stop tradebot.service

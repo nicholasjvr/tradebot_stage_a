@@ -1,0 +1,16 @@
+# Trader configuration example
+# Copy to trader_config.yaml and adjust. Use with: python -m bot.trader --config trader_config.yaml
+
+symbols: ["BTC/USDT", "ETH/USDT"]
+timeframe: "7m"
+mode: paper  # paper | live
+order_type: market  # market | limit
+fixed_quote_amount: 25
+strategy: sma  # sma | ml
+model_path: models/ml_strategy_v1.pkl  # required when strategy=ml
+ml_lookback: 60
+ml_confidence_threshold: 0.55
+sma_fast_window: 10
+sma_slow_window: 30
+trader_interval: 60
+paper_fee_rate: 0.001

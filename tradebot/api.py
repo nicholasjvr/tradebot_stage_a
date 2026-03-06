@@ -15,18 +15,25 @@ app = Flask(__name__, static_folder="static")
 
 @app.route('/ohlcv')
 def get_ohlcv():
-    """Get OHLCV data. Query params: symbol, limit (default 100)"""
+    """Get OHLCV data. Query params: symbol, timeframe (optional), limit (default 100)"""
     symbol = request.args.get('symbol')
+    timeframe = request.args.get('timeframe')
     limit = int(request.args.get('limit', 100))
     if not symbol:
         return jsonify({"error": "symbol parameter required"}), 400
-    
+
     try:
         with Database() as db:
-            rows = db.conn.execute(
-                "SELECT * FROM ohlcv WHERE symbol=? ORDER BY timestamp DESC LIMIT ?",
-                (symbol, limit)
-            ).fetchall()
+            if timeframe:
+                rows = db.conn.execute(
+                    "SELECT * FROM ohlcv WHERE symbol=? AND timeframe=? ORDER BY timestamp DESC LIMIT ?",
+                    (symbol, timeframe, limit),
+                ).fetchall()
+            else:
+                rows = db.conn.execute(
+                    "SELECT * FROM ohlcv WHERE symbol=? ORDER BY timestamp DESC LIMIT ?",
+                    (symbol, limit),
+                ).fetchall()
             data = [dict(row) for row in rows]
         return jsonify(data)
     except Exception as e:
@@ -60,6 +67,26 @@ def chart_symbols():
                 "SELECT DISTINCT symbol FROM ohlcv ORDER BY symbol"
             ).fetchall()
         return jsonify([row["symbol"] for row in rows])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/chart/timeframes")
+def chart_timeframes():
+    """Distinct timeframes for a symbol (or all if no symbol). Query param: symbol (optional)."""
+    symbol = request.args.get('symbol')
+    try:
+        with Database() as db:
+            if symbol:
+                rows = db.conn.execute(
+                    "SELECT DISTINCT timeframe FROM ohlcv WHERE symbol=? ORDER BY timeframe",
+                    (symbol,),
+                ).fetchall()
+            else:
+                rows = db.conn.execute(
+                    "SELECT DISTINCT timeframe FROM ohlcv ORDER BY timeframe"
+                ).fetchall()
+        return jsonify([row["timeframe"] for row in rows])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -124,6 +151,33 @@ def chart_positions():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/chart/trade_analytics")
+def chart_trade_analytics():
+    """Trade analytics: total_trades, win_count, loss_count, win_rate, total_pnl. Query param: mode (default paper), limit (default 100)."""
+    mode = request.args.get("mode", "paper")
+    limit = min(int(request.args.get("limit", 100)), 500)
+    try:
+        with Database() as db:
+            trades = db.get_trade_round_trips(mode=mode, limit=limit)
+            total_trades = len(trades)
+            win_count = sum(1 for t in trades if t.get("is_win"))
+            loss_count = sum(1 for t in trades if not t.get("is_win") and t.get("pnl", 0) < 0)
+            win_rate = (win_count / total_trades) if total_trades > 0 else None
+            if mode == "paper":
+                total_pnl = db.get_paper_realized_pnl_total()
+            else:
+                total_pnl = sum(t.get("pnl", 0) for t in trades)
+        return jsonify({
+            "total_trades": total_trades,
+            "win_count": win_count,
+            "loss_count": loss_count,
+            "win_rate": round(win_rate, 4) if win_rate is not None else None,
+            "total_pnl": round(total_pnl, 4),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/chart/pnl_summary")
 def chart_pnl_summary():
     """Paper trading: realized PnL, spent today, daily budget, and vs threshold."""
@@ -164,14 +218,16 @@ def index():
     return jsonify({
         "message": "Tradebot Data API",
         "endpoints": {
-            "/ohlcv?symbol=BTC/USDT&limit=100": "Get OHLCV data",
+            "/ohlcv?symbol=BTC/USDT&timeframe=7m&limit=100": "Get OHLCV data (timeframe optional)",
             "/tickers?symbol=BTC/USDT&limit=100": "Get ticker data",
             "/chart/symbols": "Distinct symbols (for dropdowns)",
+            "/chart/timeframes?symbol=BTC/USDT": "Distinct timeframes for symbol (optional)",
             "/chart/candle_counts": "Candle counts per symbol/timeframe",
             "/chart/orders?limit=15": "Recent orders",
             "/chart/fills?limit=10": "Recent fills",
             "/chart/positions": "Current positions",
             "/chart/pnl_summary": "Paper PnL, spent today, budget, threshold",
+            "/chart/trade_analytics?mode=paper&limit=100": "Trade analytics: win rate, total trades, PnL",
             "/dashboard": "Web dashboard with charts"
         }
     })

@@ -7,6 +7,7 @@ Run:
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import signal
@@ -14,14 +15,18 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Iterable
 
 from .config import (
+    BASE_DIR,
     LOGS_DIR,
     EXCHANGE_NAME,
     PUBLIC_ONLY,
     ENABLE_LIVE_TRADING,
+    RESAMPLE_TO,
     SYMBOLS as ENV_SYMBOLS,
+    TIMEFRAME as ENV_TIMEFRAME,
     TRADER_TIMEFRAME as ENV_TRADER_TIMEFRAME,
     TRADING_MODE as ENV_TRADING_MODE,
     ORDER_TYPE as ENV_ORDER_TYPE,
@@ -31,12 +36,17 @@ from .config import (
     TRADER_INTERVAL as ENV_TRADER_INTERVAL,
     PAPER_FEE_RATE as ENV_PAPER_FEE_RATE,
     DAILY_BUDGET_QUOTE as ENV_DAILY_BUDGET_QUOTE,
+    STRATEGY as ENV_STRATEGY,
+    ML_MODEL_PATH as ENV_ML_MODEL_PATH,
+    ML_LOOKBACK as ENV_ML_LOOKBACK,
+    ML_CONFIDENCE_THRESHOLD as ENV_ML_CONFIDENCE_THRESHOLD,
 )
 from .db import Database
 from .exchange import Exchange
 from .paper import paper_buy_fixed_quote, paper_sell_all
 from .risk import enforce_min_notional, fixed_quote_sizing
 from .strategy_sma import compute_sma_signal
+from .strategy_ml import compute_ml_signal
 
 
 log_file = LOGS_DIR / f"trader_{datetime.now().strftime('%Y%m%d')}.log"
@@ -71,6 +81,20 @@ def _parse_symbols(s: str) -> list[str]:
     return [x.strip() for x in s.split(",") if x.strip()]
 
 
+def _load_config_file(path: Path) -> dict:
+    """Load trader config from YAML or JSON file."""
+    text = path.read_text()
+    if path.suffix.lower() in (".yaml", ".yml"):
+        try:
+            import yaml
+        except ImportError:
+            raise SystemExit("YAML config requires PyYAML. Install with: pip install PyYAML")
+        return yaml.safe_load(text) or {}
+    if path.suffix.lower() == ".json":
+        return json.loads(text)
+    raise ValueError(f"Unsupported config format: {path.suffix}. Use .yaml or .json")
+
+
 def _base_asset(symbol: str) -> str:
     # ccxt unified symbols are usually BASE/QUOTE
     return symbol.split("/")[0].strip()
@@ -92,16 +116,20 @@ class TraderConfig:
     sma_slow: int
     interval_s: int
     paper_fee_rate: float
+    strategy: str  # sma | ml
+    model_path: Optional[Path]  # required when strategy=ml
+    ml_lookback: int
+    ml_confidence_threshold: float
 
 
 class Trader:
-    def __init__(self):
+    def __init__(self, *, args: Optional[argparse.Namespace] = None, config_overrides: Optional[dict] = None):
         self.running = False
         self.exchange = Exchange()
         self.db = Database()
         self.setup_signal_handlers()
 
-        self.cfg = self._prompt_config()
+        self.cfg = self._build_config(args=args, config_overrides=config_overrides or {})
         self.valid_symbols = self._validate_symbols(self.cfg.symbols)
         if not self.valid_symbols:
             raise SystemExit("No valid symbols to trade. Check your input / exchange.")
@@ -116,20 +144,97 @@ class Trader:
         logger.info(f"Received signal {signum}, shutting down gracefully...")
         self.running = False
 
-    def _prompt_config(self) -> TraderConfig:
+    def _build_config(
+        self, *, args: Optional[argparse.Namespace] = None, config_overrides: dict
+    ) -> TraderConfig:
+        """Build config from CLI > config file > env > interactive prompt."""
         logger.info("=" * 60)
         logger.info("Tradebot Stage B Trader (paper first, guarded live)")
         logger.info("=" * 60)
 
-        symbols = _parse_symbols(_prompt_str("Symbols (comma-separated)", ",".join([s.strip() for s in ENV_SYMBOLS])))
-        timeframe = _prompt_str("Timeframe", ENV_TRADER_TIMEFRAME)
-        mode = _prompt_str("Mode (paper/live)", ENV_TRADING_MODE).lower()
-        order_type = _prompt_str("Order type (market/limit)", ENV_ORDER_TYPE).lower()
-        fixed_quote_amount = _prompt_float("Fixed quote amount per BUY (USDT)", float(ENV_FIXED_QUOTE_AMOUNT))
-        sma_fast = _prompt_int("SMA fast window (candles)", int(ENV_SMA_FAST))
-        sma_slow = _prompt_int("SMA slow window (candles)", int(ENV_SMA_SLOW))
-        interval_s = _prompt_int("Trader loop interval (seconds)", int(ENV_TRADER_INTERVAL))
-        paper_fee_rate = _prompt_float("Paper fee rate (e.g., 0.001 = 0.1%)", float(ENV_PAPER_FEE_RATE))
+        no_prompt = args is not None and getattr(args, "no_prompt", False)
+        cfg = config_overrides
+
+        def _get(cli_attr: Optional[str], cfg_key: str, env_val, prompt_fn):
+            val = None
+            if args is not None and cli_attr and getattr(args, cli_attr, None) is not None:
+                val = getattr(args, cli_attr)
+            if val is None and cfg and cfg.get(cfg_key) is not None:
+                val = cfg[cfg_key]
+            if val is None:
+                val = env_val
+            if val is None and no_prompt:
+                raise SystemExit(f"Missing required config: {cfg_key}. Set via --{cli_attr or cfg_key}, config file, or .env")
+            if val is None:
+                val = prompt_fn()
+            return val
+
+        symbols_raw = None
+        if args is not None and getattr(args, "symbols", None):
+            symbols_raw = args.symbols
+        if symbols_raw is None and cfg and cfg.get("symbols"):
+            s = cfg["symbols"]
+            symbols_raw = ",".join(s) if isinstance(s, list) else s
+        if symbols_raw is None:
+            symbols_raw = ",".join([s.strip() for s in ENV_SYMBOLS])
+        if not no_prompt:
+            symbols_raw = _prompt_str("Symbols (comma-separated)", symbols_raw)
+        symbols = _parse_symbols(symbols_raw)
+
+        timeframe = _get("timeframe", "timeframe", ENV_TRADER_TIMEFRAME, lambda: _prompt_str("Timeframe", ENV_TRADER_TIMEFRAME))
+        if isinstance(timeframe, str):
+            timeframe = timeframe.lower()
+        mode = _get("mode", "mode", ENV_TRADING_MODE, lambda: _prompt_str("Mode (paper/live)", ENV_TRADING_MODE))
+        if isinstance(mode, str):
+            mode = mode.lower()
+        order_type = _get("order_type", "order_type", ENV_ORDER_TYPE, lambda: _prompt_str("Order type (market/limit)", ENV_ORDER_TYPE))
+        if isinstance(order_type, str):
+            order_type = order_type.lower()
+        fixed_quote_amount = _get("fixed_quote", "fixed_quote_amount", float(ENV_FIXED_QUOTE_AMOUNT), lambda: _prompt_float("Fixed quote amount per BUY (USDT)", float(ENV_FIXED_QUOTE_AMOUNT)))
+        fixed_quote_amount = float(fixed_quote_amount)
+        sma_fast = _get("sma_fast", "sma_fast_window", int(ENV_SMA_FAST), lambda: _prompt_int("SMA fast window (candles)", int(ENV_SMA_FAST)))
+        sma_fast = int(sma_fast)
+        sma_slow = _get("sma_slow", "sma_slow_window", int(ENV_SMA_SLOW), lambda: _prompt_int("SMA slow window (candles)", int(ENV_SMA_SLOW)))
+        sma_slow = int(sma_slow)
+        interval_s = _get("interval", "trader_interval", int(ENV_TRADER_INTERVAL), lambda: _prompt_int("Trader loop interval (seconds)", int(ENV_TRADER_INTERVAL)))
+        interval_s = int(interval_s)
+        paper_fee_rate = _get("paper_fee_rate", "paper_fee_rate", float(ENV_PAPER_FEE_RATE), lambda: _prompt_float("Paper fee rate (e.g., 0.001 = 0.1%)", float(ENV_PAPER_FEE_RATE)))
+        paper_fee_rate = float(paper_fee_rate)
+
+        strategy = _get("strategy", "strategy", ENV_STRATEGY, lambda: _prompt_str("Strategy (sma/ml)", ENV_STRATEGY))
+        if isinstance(strategy, str):
+            strategy = strategy.lower()
+        if strategy not in {"sma", "ml"}:
+            logger.warning(f"Invalid strategy '{strategy}', defaulting to sma")
+            strategy = "sma"
+
+        model_path_raw = None
+        if args is not None and getattr(args, "model_path", None):
+            model_path_raw = getattr(args, "model_path")
+        if model_path_raw is None and cfg and cfg.get("model_path"):
+            model_path_raw = cfg["model_path"]
+        if model_path_raw is None:
+            model_path_raw = ENV_ML_MODEL_PATH
+        if isinstance(model_path_raw, str) and not model_path_raw.strip():
+            model_path_raw = None
+        if model_path_raw is None and no_prompt and strategy == "ml":
+            raise SystemExit("STRATEGY=ml requires ML_MODEL_PATH. Set via --model-path, config, or .env")
+        if model_path_raw is None and strategy == "ml":
+            model_path_raw = _prompt_str("Model path (e.g. models/ml_strategy_v1.pkl)", "")
+
+        model_path: Optional[Path] = None
+        if model_path_raw:
+            p = Path(model_path_raw)
+            model_path = p if p.is_absolute() else (BASE_DIR / p)
+
+        if strategy == "ml":
+            if not model_path or not model_path.exists():
+                raise SystemExit(f"ML strategy requires valid model file. Not found: {model_path}")
+
+        ml_lookback = _get("ml_lookback", "ml_lookback", ENV_ML_LOOKBACK, lambda: _prompt_int("ML lookback (candles)", int(ENV_ML_LOOKBACK)))
+        ml_lookback = int(ml_lookback)
+        ml_confidence_threshold = _get("ml_confidence_threshold", "ml_confidence_threshold", ENV_ML_CONFIDENCE_THRESHOLD, lambda: _prompt_float("ML confidence threshold (e.g. 0.55)", float(ENV_ML_CONFIDENCE_THRESHOLD)))
+        ml_confidence_threshold = float(ml_confidence_threshold)
 
         if mode not in {"paper", "live"}:
             logger.warning(f"Invalid mode '{mode}', defaulting to paper")
@@ -137,6 +242,11 @@ class Trader:
         if order_type not in {"market", "limit"}:
             logger.warning(f"Invalid order_type '{order_type}', defaulting to market")
             order_type = "market"
+
+        # Timeframe validation: warn if not in RESAMPLE_TO or base TIMEFRAME
+        valid_tfs = set(RESAMPLE_TO) | {ENV_TIMEFRAME}
+        if timeframe not in valid_tfs:
+            logger.warning(f"Timeframe '{timeframe}' not in RESAMPLE_TO ({RESAMPLE_TO}) or TIMEFRAME ({ENV_TIMEFRAME}). Ensure collector resamples this timeframe.")
 
         # Safety gate: never allow live if PUBLIC_ONLY or ENABLE_LIVE_TRADING is false
         if mode == "live":
@@ -162,6 +272,10 @@ class Trader:
             sma_slow=sma_slow,
             interval_s=interval_s,
             paper_fee_rate=paper_fee_rate,
+            strategy=strategy,
+            model_path=model_path,
+            ml_lookback=ml_lookback,
+            ml_confidence_threshold=ml_confidence_threshold,
         )
 
     def _validate_symbols(self, symbols: Iterable[str]) -> list[str]:
@@ -175,34 +289,64 @@ class Trader:
         return out
 
     def _ensure_has_data(self, symbol: str) -> bool:
-        rows = self.db.get_recent_closes(symbol, self.cfg.timeframe, limit=self.cfg.sma_slow)
-        if len(rows) < self.cfg.sma_slow:
+        need = self.cfg.ml_lookback if self.cfg.strategy == "ml" else self.cfg.sma_slow
+        if self.cfg.strategy == "ml":
+            rows = self.db.get_recent_ohlcv(symbol, self.cfg.timeframe, limit=need)
+        else:
+            rows = self.db.get_recent_closes(symbol, self.cfg.timeframe, limit=need)
+        if len(rows) < need:
             logger.warning(
-                f"[TRADER] symbol={symbol} status=insufficient_data have={len(rows)} need={self.cfg.sma_slow} "
+                f"[TRADER] symbol={symbol} status=insufficient_data have={len(rows)} need={need} "
                 f"timeframe={self.cfg.timeframe}"
             )
             return False
         return True
 
     def _desired_long(self, symbol: str) -> Optional[bool]:
-        rows = self.db.get_recent_closes(symbol, self.cfg.timeframe, limit=self.cfg.sma_slow)
-        if len(rows) < self.cfg.sma_slow:
+        if self.cfg.strategy == "sma":
+            rows = self.db.get_recent_closes(symbol, self.cfg.timeframe, limit=self.cfg.sma_slow)
+            if len(rows) < self.cfg.sma_slow:
+                return None
+            closes = [float(r["close"]) for r in rows]
+            tss = [int(r["timestamp"]) for r in rows]
+            sig = compute_sma_signal(
+                symbol=symbol,
+                timeframe=self.cfg.timeframe,
+                closes=closes,
+                timestamps=tss,
+                fast_window=self.cfg.sma_fast,
+                slow_window=self.cfg.sma_slow,
+            )
+            logger.info(
+                f"[SIGNAL] symbol={symbol} tf={self.cfg.timeframe} strategy=sma close={sig.latest_close:.6f} "
+                f"fast={sig.fast_sma:.6f} slow={sig.slow_sma:.6f} should_long={int(sig.should_be_long)}"
+            )
+            return sig.should_be_long
+
+        # strategy == "ml"
+        rows = self.db.get_recent_ohlcv(symbol, self.cfg.timeframe, limit=self.cfg.ml_lookback)
+        if len(rows) < self.cfg.ml_lookback:
             return None
-        closes = [float(r["close"]) for r in rows]
-        tss = [int(r["timestamp"]) for r in rows]
-        sig = compute_sma_signal(
+        sig = compute_ml_signal(
             symbol=symbol,
             timeframe=self.cfg.timeframe,
-            closes=closes,
-            timestamps=tss,
-            fast_window=self.cfg.sma_fast,
-            slow_window=self.cfg.sma_slow,
+            ohlcv_rows=rows,
+            model_path=self.cfg.model_path,
+            lookback=self.cfg.ml_lookback,
         )
         logger.info(
-            f"[SIGNAL] symbol={symbol} tf={self.cfg.timeframe} close={sig.latest_close:.6f} "
-            f"fast={sig.fast_sma:.6f} slow={sig.slow_sma:.6f} should_long={int(sig.should_be_long)}"
+            f"[SIGNAL] symbol={symbol} tf={self.cfg.timeframe} strategy=ml close={sig.latest_close:.6f} "
+            f"confidence={sig.confidence:.4f} should_long={int(sig.should_be_long)}"
         )
-        return sig.should_be_long
+        if not sig.should_be_long:
+            return False
+        if sig.confidence < self.cfg.ml_confidence_threshold:
+            logger.info(
+                f"[TRADER] symbol={symbol} action=skip confidence={sig.confidence:.4f} "
+                f"below threshold={self.cfg.ml_confidence_threshold}"
+            )
+            return False
+        return True
 
     def _is_long(self, symbol: str) -> bool:
         pos = self.db.get_position(mode=self.cfg.mode, exchange=EXCHANGE_NAME, symbol=symbol)
@@ -236,7 +380,8 @@ class Trader:
                 params=params,
             )
 
-        self._persist_live_order(symbol=symbol, side="buy", order=order, ts=ts, reason="sma_long")
+        reason = "ml_long" if self.cfg.strategy == "ml" else "sma_long"
+        self._persist_live_order(symbol=symbol, side="buy", order=order, ts=ts, reason=reason)
 
     def _live_sell(self, *, symbol: str, price_hint: float, ts: int) -> None:
         base = _base_asset(symbol)
@@ -268,7 +413,8 @@ class Trader:
                 params=params,
             )
 
-        self._persist_live_order(symbol=symbol, side="sell", order=order, ts=ts, reason="sma_flat")
+        reason = "ml_flat" if self.cfg.strategy == "ml" else "sma_flat"
+        self._persist_live_order(symbol=symbol, side="sell", order=order, ts=ts, reason=reason)
 
     def _persist_live_order(self, *, symbol: str, side: str, order: dict, ts: int, reason: str) -> None:
         # ccxt order fields are exchange-dependent; persist what we can.
@@ -299,8 +445,8 @@ class Trader:
             fee=float(fee_cost) if fee_cost is not None else None,
             fee_currency=str(fee_cur) if fee_cur is not None else None,
             exchange_order_id=str(exchange_order_id) if exchange_order_id is not None else None,
-            strategy="sma_crossover",
-            signal="long" if reason == "sma_long" else "flat",
+            strategy="ml_crossover" if reason in ("ml_long", "ml_flat") else "sma_crossover",
+            signal="long" if reason in ("sma_long", "ml_long") else "flat",
             reason=reason,
             ts=ts,
             raw_json=json.dumps(order, default=str, separators=(",", ":")),
@@ -397,6 +543,8 @@ class Trader:
                                     f"spent_today={spent_today:.2f} budget={ENV_DAILY_BUDGET_QUOTE}"
                                 )
                                 continue
+                        strat = "ml_crossover" if self.cfg.strategy == "ml" else "sma_crossover"
+                        reason = "ml_long" if self.cfg.strategy == "ml" else "sma_long"
                         paper_buy_fixed_quote(
                             db=self.db,
                             exchange=EXCHANGE_NAME,
@@ -405,9 +553,9 @@ class Trader:
                             price=price,
                             fee_rate=self.cfg.paper_fee_rate,
                             timeframe=self.cfg.timeframe,
-                            strategy="sma_crossover",
+                            strategy=strat,
                             signal="long",
-                            reason="sma_long",
+                            reason=reason,
                             order_type=self.cfg.order_type,
                             ts=ts,
                         )
@@ -416,6 +564,8 @@ class Trader:
 
                 elif (not want_long) and is_long:
                     if self.cfg.mode == "paper":
+                        strat = "ml_crossover" if self.cfg.strategy == "ml" else "sma_crossover"
+                        reason = "ml_flat" if self.cfg.strategy == "ml" else "sma_flat"
                         paper_sell_all(
                             db=self.db,
                             exchange=EXCHANGE_NAME,
@@ -423,9 +573,9 @@ class Trader:
                             price=price,
                             fee_rate=self.cfg.paper_fee_rate,
                             timeframe=self.cfg.timeframe,
-                            strategy="sma_crossover",
+                            strategy=strat,
                             signal="flat",
-                            reason="sma_flat",
+                            reason=reason,
                             order_type=self.cfg.order_type,
                             ts=ts,
                         )
@@ -447,7 +597,12 @@ class Trader:
         logger.info(f"Timeframe: {self.cfg.timeframe}")
         logger.info(f"Order type: {self.cfg.order_type}")
         logger.info(f"Fixed quote amount: {self.cfg.fixed_quote_amount}")
-        logger.info(f"SMA fast/slow: {self.cfg.sma_fast}/{self.cfg.sma_slow}")
+        logger.info(f"Strategy: {self.cfg.strategy}")
+        if self.cfg.strategy == "sma":
+            logger.info(f"SMA fast/slow: {self.cfg.sma_fast}/{self.cfg.sma_slow}")
+        else:
+            logger.info(f"ML model: {self.cfg.model_path}")
+            logger.info(f"ML lookback: {self.cfg.ml_lookback} confidence_threshold: {self.cfg.ml_confidence_threshold}")
         logger.info(f"Interval: {self.cfg.interval_s}s")
         logger.info("=" * 60)
 
@@ -467,8 +622,33 @@ class Trader:
             logger.info("Trader stopped")
 
 
+def _parse_args():
+    parser = argparse.ArgumentParser(description="Tradebot Stage B Trader (paper first, guarded live)")
+    parser.add_argument("--symbols", type=str, help="Comma-separated symbols (e.g. BTC/USDT,ETH/USDT)")
+    parser.add_argument("--strategy", type=str, choices=["sma", "ml"], help="Strategy: sma or ml")
+    parser.add_argument("--model-path", dest="model_path", type=Path, help="Path to ML model .pkl (required when strategy=ml)")
+    parser.add_argument("--timeframe", type=str, help="Strategy timeframe (e.g. 7m)")
+    parser.add_argument("--mode", type=str, choices=["paper", "live"], help="Trading mode")
+    parser.add_argument("--order-type", dest="order_type", type=str, choices=["market", "limit"], help="Order type")
+    parser.add_argument("--fixed-quote", dest="fixed_quote", type=float, help="Fixed quote amount per BUY (USDT)")
+    parser.add_argument("--sma-fast", dest="sma_fast", type=int, help="SMA fast window (candles)")
+    parser.add_argument("--sma-slow", dest="sma_slow", type=int, help="SMA slow window (candles)")
+    parser.add_argument("--interval", type=int, help="Trader loop interval (seconds)")
+    parser.add_argument("--paper-fee-rate", dest="paper_fee_rate", type=float, help="Paper fee rate (e.g. 0.001)")
+    parser.add_argument("--config", type=Path, help="Path to YAML/JSON config file")
+    parser.add_argument("--no-prompt", dest="no_prompt", action="store_true", help="Use only env/config/CLI; exit if any required value missing")
+    return parser.parse_args()
+
+
 def main():
-    Trader().run()
+    args = _parse_args()
+    config_overrides = {}
+    if args.config:
+        if not args.config.exists():
+            raise SystemExit(f"Config file not found: {args.config}")
+        config_overrides = _load_config_file(args.config)
+    trader = Trader(args=args, config_overrides=config_overrides)
+    trader.run()
 
 
 if __name__ == "__main__":

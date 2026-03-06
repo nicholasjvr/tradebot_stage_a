@@ -14,6 +14,8 @@
     .controls input, .controls select { padding: 0.4rem 0.6rem; border-radius: 6px; border: 1px solid #444; background: #2a2a3e; color: #eee; }
     .controls button { padding: 0.5rem 1rem; border-radius: 6px; border: none; background: #4361ee; color: white; cursor: pointer; }
     .controls button:hover { background: #3651d4; }
+    .refresh-btn { background: #3a3a5c; font-size: 0.85rem; }
+    .refresh-btn:hover { background: #4a4a6c; }
     .chart-wrap { background: #16213e; border-radius: 10px; padding: 1rem; margin-bottom: 1.5rem; max-width: 900px; }
     .chart-wrap h2 { margin: 0 0 0.5rem 0; font-size: 1rem; color: #a0a0c0; }
     .chart-container { position: relative; height: 280px; }
@@ -41,6 +43,9 @@
   <div class="chart-wrap">
     <h2>Paper trading: PnL vs threshold (from <code>/chart/pnl_summary</code>)</h2>
     <p class="sql-ref">How much the bot is making (realized PnL) and spent today vs daily budget and threshold.</p>
+    <div class="controls">
+      <button id="refreshPnl" class="refresh-btn">Refresh</button>
+    </div>
     <div class="pnl-summary" id="pnlSummary">
       <span>Realized PnL</span><strong id="pnlRealized">—</strong>
       <span>Spent today</span><strong id="pnlSpent">—</strong>
@@ -52,9 +57,26 @@
   </div>
 
   <div class="chart-wrap">
+    <h2>Trade analytics (from <code>/chart/trade_analytics</code>)</h2>
+    <p class="sql-ref">Win rate, total trades, and PnL from round-trip trades.</p>
+    <div class="controls">
+      <button id="refreshAnalytics" class="refresh-btn">Refresh</button>
+    </div>
+    <div class="pnl-summary" id="analyticsSummary">
+      <span>Total trades</span><strong id="analyticsTotalTrades">—</strong>
+      <span>Wins</span><strong id="analyticsWins">—</strong>
+      <span>Losses</span><strong id="analyticsLosses">—</strong>
+      <span>Win rate</span><strong id="analyticsWinRate">—</strong>
+      <span>Total PnL</span><strong id="analyticsTotalPnl">—</strong>
+    </div>
+    <div id="analyticsError" class="error"></div>
+  </div>
+
+  <div class="chart-wrap">
     <h2>OHLCV close price (from <code>/ohlcv</code>)</h2>
     <div class="controls">
       <label>Symbol <select id="symbol"><option value="BTC/USDT">BTC/USDT</option></select></label>
+      <label>Timeframe <select id="timeframe"><option value="7m">7m</option><option value="1m">1m</option><option value="5m">5m</option><option value="30m">30m</option></select></label>
       <label>Limit <select id="limit"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
       <button id="loadOhlcv">Load &amp; chart</button>
     </div>
@@ -72,6 +94,7 @@
   <div class="chart-wrap">
     <h2>Recent orders (from <code>/chart/orders</code>)</h2>
     <p class="sql-ref">SQL: <code>SELECT id, mode, symbol, side, type, status, amount, price, filled, ts, created_at FROM orders ORDER BY ts DESC LIMIT 15</code></p>
+    <div class="controls"><button id="refreshOrders" class="refresh-btn">Refresh</button></div>
     <div class="chart-container"><canvas id="ordersChart"></canvas></div>
     <div class="data-table-wrap"><table id="ordersTable"><thead><tr><th>id</th><th>mode</th><th>symbol</th><th>side</th><th>type</th><th>status</th><th>amount</th><th>price</th><th>filled</th><th>ts</th></tr></thead><tbody></tbody></table></div>
     <div id="ordersError" class="error"></div>
@@ -80,6 +103,7 @@
   <div class="chart-wrap">
     <h2>Recent fills (from <code>/chart/fills</code>)</h2>
     <p class="sql-ref">SQL: <code>SELECT f.id, f.symbol, f.side, f.price, f.amount, f.cost, f.ts, f.order_id FROM fills f ORDER BY f.ts DESC LIMIT 10</code></p>
+    <div class="controls"><button id="refreshFills" class="refresh-btn">Refresh</button></div>
     <div class="data-table-wrap"><table id="fillsTable"><thead><tr><th>id</th><th>symbol</th><th>side</th><th>price</th><th>amount</th><th>cost</th><th>ts</th><th>order_id</th></tr></thead><tbody></tbody></table></div>
     <div id="fillsError" class="error"></div>
   </div>
@@ -87,6 +111,7 @@
   <div class="chart-wrap">
     <h2>Current positions (from <code>/chart/positions</code>)</h2>
     <p class="sql-ref">SQL: <code>SELECT mode, exchange, symbol, base_qty, avg_entry_price, realized_pnl, updated_at FROM positions ORDER BY symbol</code></p>
+    <div class="controls"><button id="refreshPositions" class="refresh-btn">Refresh</button></div>
     <div class="chart-container"><canvas id="positionsChart"></canvas></div>
     <div class="data-table-wrap"><table id="positionsTable"><thead><tr><th>mode</th><th>exchange</th><th>symbol</th><th>base_qty</th><th>avg_entry_price</th><th>realized_pnl</th><th>updated_at</th></tr></thead><tbody></tbody></table></div>
     <div id="positionsError" class="error"></div>
@@ -100,14 +125,17 @@
     document.getElementById('loadOhlcv').addEventListener('click', loadOhlcv);
     async function loadOhlcv() {
       const symbol = document.getElementById('symbol').value;
+      const timeframe = document.getElementById('timeframe').value;
       const limit = document.getElementById('limit').value;
       const errEl = document.getElementById('ohlcvError');
       errEl.textContent = 'Loading…';
       try {
-        const r = await fetch(apiBase + '/ohlcv?symbol=' + encodeURIComponent(symbol) + '&limit=' + limit);
+        let url = apiBase + '/ohlcv?symbol=' + encodeURIComponent(symbol) + '&limit=' + limit;
+        if (timeframe) url += '&timeframe=' + encodeURIComponent(timeframe);
+        const r = await fetch(url);
         if (!r.ok) throw new Error(await r.text());
         const data = await r.json();
-        if (!data.length) { errEl.textContent = 'No data for ' + symbol; return; }
+        if (!data.length) { errEl.textContent = 'No data for ' + symbol + (timeframe ? ' ' + timeframe : ''); return; }
         const sorted = data.slice().sort((a, b) => a.timestamp - b.timestamp);
         const labels = sorted.map(row => new Date(row.timestamp).toLocaleString());
         const closes = sorted.map(row => row.close);
@@ -129,7 +157,7 @@
         } else {
           ohlcvChart.data.labels = labels;
           ohlcvChart.data.datasets[0].data = closes;
-          ohlcvChart.data.datasets[0].label = 'Close – ' + symbol;
+          ohlcvChart.data.datasets[0].label = 'Close – ' + symbol + (timeframe ? ' ' + timeframe : '');
           ohlcvChart.update();
         }
         errEl.textContent = '';
@@ -138,8 +166,24 @@
       }
     }
 
+    async function populateTimeframeDropdown(symbol) {
+      const sel = document.getElementById('timeframe');
+      try {
+        const r = await fetch(apiBase + '/chart/timeframes?symbol=' + encodeURIComponent(symbol));
+        if (r.ok) {
+          const timeframes = await r.json();
+          if (timeframes.length) {
+            sel.innerHTML = timeframes.map(tf => `<option value="${tf}">${tf}</option>`).join('');
+            const has7m = timeframes.includes('7m');
+            if (has7m) sel.value = '7m';
+            else sel.value = timeframes[0];
+          }
+        }
+      } catch (_) {}
+    }
+
     // Candle counts bar chart (from predefined SQL)
-    (async function loadCandleCounts() {
+    async function loadCandleCounts() {
       const errEl = document.getElementById('countsError');
       errEl.textContent = 'Loading…';
       try {
@@ -170,10 +214,10 @@
       } catch (e) {
         errEl.textContent = 'Error: ' + e.message;
       }
-    })();
+    }
 
     // Orders: bar chart by status + table
-    (async function loadOrders() {
+    async function loadOrders() {
       const errEl = document.getElementById('ordersError');
       const tbody = document.querySelector('#ordersTable tbody');
       errEl.textContent = 'Loading…';
@@ -198,10 +242,10 @@
       } catch (e) {
         errEl.textContent = 'Error: ' + e.message;
       }
-    })();
+    }
 
     // Fills: table only
-    (async function loadFills() {
+    async function loadFills() {
       const errEl = document.getElementById('fillsError');
       const tbody = document.querySelector('#fillsTable tbody');
       errEl.textContent = 'Loading…';
@@ -214,10 +258,10 @@
       } catch (e) {
         errEl.textContent = 'Error: ' + e.message;
       }
-    })();
+    }
 
     // Positions: bar chart by symbol (realized_pnl) + table
-    (async function loadPositions() {
+    async function loadPositions() {
       const errEl = document.getElementById('positionsError');
       const tbody = document.querySelector('#positionsTable tbody');
       errEl.textContent = 'Loading…';
@@ -240,10 +284,10 @@
       } catch (e) {
         errEl.textContent = 'Error: ' + e.message;
       }
-    })();
+    }
 
     // PnL summary (paper trading: realized PnL, spent today, threshold; ZAR if ZAR_PER_USDT set)
-    (async function loadPnlSummary() {
+    async function loadPnlSummary() {
       const errEl = document.getElementById('pnlError');
       try {
         const r = await fetch(apiBase + '/chart/pnl_summary');
@@ -271,10 +315,29 @@
       } catch (e) {
         errEl.textContent = 'Error: ' + e.message;
       }
-    })();
+    }
+
+    // Trade analytics
+    async function loadTradeAnalytics() {
+      const errEl = document.getElementById('analyticsError');
+      errEl.textContent = 'Loading…';
+      try {
+        const r = await fetch(apiBase + '/chart/trade_analytics?mode=paper&limit=100');
+        if (!r.ok) throw new Error(await r.text());
+        const d = await r.json();
+        document.getElementById('analyticsTotalTrades').textContent = d.total_trades ?? '—';
+        document.getElementById('analyticsWins').textContent = d.win_count ?? '—';
+        document.getElementById('analyticsLosses').textContent = d.loss_count ?? '—';
+        document.getElementById('analyticsWinRate').textContent = d.win_rate != null ? (d.win_rate * 100).toFixed(1) + '%' : '—';
+        document.getElementById('analyticsTotalPnl').textContent = d.total_pnl != null ? d.total_pnl.toFixed(4) + ' USDT' : '—';
+        errEl.textContent = '';
+      } catch (e) {
+        errEl.textContent = 'Error: ' + e.message;
+      }
+    }
 
     // Populate symbol dropdown from API, then load OHLCV
-    (async function initSymbolDropdown() {
+    async function initSymbolDropdown() {
       const sel = document.getElementById('symbol');
       try {
         const r = await fetch(apiBase + '/chart/symbols');
@@ -287,7 +350,33 @@
           }
         }
       } catch (_) {}
+      await populateTimeframeDropdown(sel.value);
       loadOhlcv();
+    }
+
+    // Refresh button handlers
+    document.getElementById('refreshPnl').addEventListener('click', loadPnlSummary);
+    document.getElementById('refreshAnalytics').addEventListener('click', loadTradeAnalytics);
+    document.getElementById('refreshOrders').addEventListener('click', loadOrders);
+    document.getElementById('refreshFills').addEventListener('click', loadFills);
+    document.getElementById('refreshPositions').addEventListener('click', loadPositions);
+
+    document.getElementById('symbol').addEventListener('change', function() {
+      populateTimeframeDropdown(this.value).then(() => loadOhlcv());
+    });
+
+    // Initial load
+    (async function init() {
+      await initSymbolDropdown();
+      await loadCandleCounts();
+      loadOrders();
+      loadFills();
+      loadPositions();
+      loadPnlSummary();
+      loadTradeAnalytics();
+
+      // Auto-refresh every 30s for Orders, Fills, Positions
+      setInterval(() => { loadOrders(); loadFills(); loadPositions(); }, 30000);
     })();
   </script>
 </body>
